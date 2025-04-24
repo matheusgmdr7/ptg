@@ -167,19 +167,19 @@ const _cacheTimestamps = {
 }
 
 // Adicionar função para gerenciar WebSockets
-const _activeWebSockets = {}
+const _activeWebSockets: Record<string, WebSocket> = {}
 
 // Adicionar função para iniciar WebSocket
 // Corrigir a variável de cache global
 let _cachedTradingData = {
   timestamp: 0,
   data: {
-    balance: null,
-    positions: [],
-    trades: [],
-    pnlData: {},
-    deposits: [],
-    withdrawals: [],
+    balance: null as AccountBalance | null,
+    positions: [] as Position[],
+    trades: [] as any[],
+    pnlData: {} as any,
+    deposits: [] as CapitalMovementRecord[],
+    withdrawals: [] as CapitalMovementRecord[],
   },
 }
 
@@ -1304,6 +1304,7 @@ const getPnLData = async (connections: any[]) => {
     return {
       dailyPnL: 0,
       dailyPnLPercentage: 0,
+      weeklyPnL: 0,
       weeklyPnLPercentage: 0,
       highestLeverage: 0,
       dailyTrades: 0,
@@ -1323,6 +1324,7 @@ const getPnLData = async (connections: any[]) => {
       return {
         dailyPnL: 0,
         dailyPnLPercentage: 0,
+        weeklyPnL: 0,
         weeklyPnLPercentage: 0,
         highestLeverage: 0,
         dailyTrades: 0,
@@ -1516,9 +1518,15 @@ const getPnLData = async (connections: any[]) => {
 
         // Calcular percentuais (em relação ao saldo atual)
         // Usamos Math.max com um valor pequeno para evitar divisão por zero
-        const safeBalance = Math.max(totalBalance, 0.0001)
-        const dailyPnLPercentage = (adjustedDailyPnL / safeBalance) * 100
-        const weeklyPnLPercentage = (adjustedWeeklyPnL / safeBalance) * 100
+        const safeDivisor = Math.max(totalBalance, 0.000001)
+
+        const dailyPnLPercentage = (adjustedDailyPnL / safeDivisor) * 100
+        const weeklyPnLPercentage = (adjustedWeeklyPnL / safeDivisor) * 100
+
+        console.log(`API: Calculated daily P&L: ${adjustedDailyPnL}, weekly P&L: ${adjustedWeeklyPnL}`)
+        console.log(
+          `API: Calculated daily P&L percentage: ${dailyPnLPercentage}, weekly P&L percentage: ${weeklyPnLPercentage}`,
+        )
 
         return {
           dailyPnL: adjustedDailyPnL,
@@ -1529,7 +1537,7 @@ const getPnLData = async (connections: any[]) => {
           dailyTrades: dailyTrades,
         }
       } catch (error) {
-        console.error("API: Error fetching P&L data:", error)
+        console.error("API: Error fetching P&L data from Binance:", error)
         return {
           dailyPnL: 0,
           dailyPnLPercentage: 0,
@@ -1539,4 +1547,26 @@ const getPnLData = async (connections: any[]) => {
           dailyTrades: 0,
         }
       }
+    } else {
+      console.log(`API: Exchange ${exchange} not supported for P&L data, returning zero P&L`)
+      return {
+        dailyPnL: 0,
+        dailyPnLPercentage: 0,
+        weeklyPnL: 0,
+        weeklyPnLPercentage: 0,
+        highestLeverage: 0,
+        dailyTrades: 0,
+      }
     }
+  } catch (error) {
+    console.error("API: Error fetching P&L data:", error)
+    return {
+      dailyPnL: 0,
+      dailyPnLPercentage: 0,
+      weeklyPnL: 0,
+      weeklyPnLPercentage: 0,
+      highestLeverage: 0,
+      dailyTrades: 0,
+    }
+  }
+}
