@@ -1134,7 +1134,7 @@ const getPnLData = async (connections: any[]) => {
     }
 
     // Buscar movimentações manuais do Supabase
-    let manualMovements = []
+    let manualMovements = {}
     try {
       const { getCapitalMovementTotals } = await import("../services/capitalMovementService")
       const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
@@ -1336,6 +1336,7 @@ const getPnLData = async (connections: any[]) => {
         return {
           dailyPnL: 0,
           dailyPnLPercentage: 0,
+          weeklyPnL: 0,
           weeklyPnLPercentage: 0,
           highestLeverage: 0,
           dailyTrades: 0,
@@ -1347,6 +1348,7 @@ const getPnLData = async (connections: any[]) => {
       return {
         dailyPnL: 0,
         dailyPnLPercentage: 0,
+        weeklyPnL: 0,
         weeklyPnLPercentage: 0,
         highestLeverage: 0,
         dailyTrades: 0,
@@ -1358,6 +1360,7 @@ const getPnLData = async (connections: any[]) => {
     return {
       dailyPnL: 0,
       dailyPnLPercentage: 0,
+      weeklyPnL: 0,
       weeklyPnLPercentage: 0,
       highestLeverage: 0,
       dailyTrades: 0,
@@ -1519,4 +1522,16 @@ export const api = {
                   `timestamp=${timestamp}&incomeType=REALIZED_PNL&limit=1000&startTime=${chunk.start}&endTime=${chunk.end}`,
                 )
                 const incomeSignature = await createHmacSignature(incomeQueryString, apiSecret)
-                const incomeUrl = `${
+                const incomeUrl = `${incomeEndpoint}?${incomeQueryString}&signature=${incomeSignature}`
+
+                console.log(`API: Sending request to Binance for income history (chunk ${index + 1})`)
+
+                const incomeResponse = await rateLimitedRequest(incomeUrl, {
+                  method: "GET",
+                  headers: {
+                    "X-MBX-APIKEY": apiKey,
+                  },
+                })
+
+                if (incomeResponse.ok) {
+                  const chunkIncome
