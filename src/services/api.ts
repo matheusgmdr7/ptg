@@ -183,22 +183,6 @@ let _cachedTradingData = {
   },
 }
 
-// Declarar a variável api para uso em funções internas
-const api: any = {}
-
-// Adicionar todas as funções ao objeto api
-api.getAccountBalance = getAccountBalance
-api.getPositions = getPositions
-api.getTrades = getTrades
-api.startWebSocketUpdates = startWebSocketUpdates
-api.getBinanceDeposits = getBinanceDeposits
-api.getBinanceWithdrawals = getBinanceWithdrawals
-api.getBinanceCapitalMovements = getBinanceCapitalMovements
-api.getPnLData = getPnLData
-api.getRiskStatus = getRiskStatus
-api.getLightBehaviors = getLightBehaviors
-api.getCombinedTradingData = getCombinedTradingData
-
 // Remover delays artificiais da função rateLimitedRequest
 async function rateLimitedRequest(url: string, options: RequestInit): Promise<Response> {
   const now = Date.now()
@@ -892,8 +876,7 @@ const startWebSocketUpdates = async (connections, callback) => {
           console.log(`API: WebSocket connection opened for ${exchange}`)
 
           // Obter símbolos das posições atuais para assinar
-          api
-            .getPositions(connections)
+          getPositions(connections)
             .then((positions) => {
               try {
                 const symbols = positions.map((p) => p.symbol.toLowerCase())
@@ -948,8 +931,7 @@ const startWebSocketUpdates = async (connections, callback) => {
               const symbol = data.s
 
               // Atualizar posições com novo preço de marcação
-              api
-                .getPositions(connections, false, true)
+              getPositions(connections, false, true)
                 .then((positions) => {
                   if (!positions || !Array.isArray(positions)) return
 
@@ -1473,7 +1455,7 @@ const getPnLData = async (connections: any[]) => {
         const dailyTrades = uniqueOrderIds.size
 
         // Obter saldo total para calcular percentuais
-        const balanceData = await api.getAccountBalance(connections, accountType)
+        const balanceData = await getAccountBalance(connections, accountType)
         const totalBalance = balanceData.total
 
         // Ajustar o PnL considerando as movimentações de capital
@@ -1741,10 +1723,36 @@ const getCombinedTradingData = async (connections: any[]) => {
   }
 }
 
-// Adicionar as novas funções ao objeto api
-api.getRiskStatus = getRiskStatus
-api.getLightBehaviors = getLightBehaviors
-api.getCombinedTradingData = getCombinedTradingData
-
-// Exportar o objeto api
-export { api }
+// Criar e exportar o objeto api com todas as funções
+export const api = {
+  getAccountBalance,
+  getPositions,
+  getTrades,
+  startWebSocketUpdates,
+  getBinanceDeposits,
+  getBinanceWithdrawals,
+  getBinanceCapitalMovements,
+  getPnLData,
+  getRiskStatus,
+  getLightBehaviors,
+  getCombinedTradingData,
+  getRawExchangeData: () => rawExchangeData,
+  checkRealConnections: async (connections: any[]) => {
+    return connections && connections.length > 0 && connections[0]?.apiKey && connections[0]?.apiSecret
+  },
+  monitorPositionsRealTime: (connections: any[], callback: any) => {
+    startWebSocketUpdates(connections, callback)
+    return () => {
+      // Função para parar o monitoramento
+      Object.keys(_activeWebSockets).forEach((key) => {
+        try {
+          if (_activeWebSockets[key]) {
+            _activeWebSockets[key].close()
+          }
+        } catch (e) {
+          console.error("Error closing WebSocket:", e)
+        }
+      })
+    }
+  },
+}
