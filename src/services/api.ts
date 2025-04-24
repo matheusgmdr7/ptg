@@ -1460,7 +1460,6 @@ export const api = {
             dailyPnL,
             dailyPnLPercentage,
             weeklyPnL,
-            weeklyPnLPercentage,
             highestLeverage,
             dailyTrades,
           })
@@ -1849,6 +1848,178 @@ api.connectExchange = async (exchange: string, apiKey: string, apiSecret: string
     return {
       success: false,
       message: `Erro interno: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
+    }
+  }
+}
+
+// Modificar a função getPnLData para considerar movimentações de capital
+const getPnLData = async (connections: any[]): Promise<any> => {
+  console.log("API: Getting P&L data with capital movement adjustments")
+
+  // Código existente para obter dados brutos de PnL...
+
+  try {
+    // Obter dados de PnL da API da corretora...
+
+    // Calcular timestamps
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+
+    // Obter movimentações de capital nos períodos relevantes
+    const { getCapitalMovementTotals } = await import("../services/capitalMovementService")
+
+    const dailyMovements = await getCapitalMovementTotals(new Date(oneDayAgo))
+    const weeklyMovements = await getCapitalMovementTotals(new Date(sevenDaysAgo))
+
+    // Obter saldo total para calcular percentuais
+    const balanceData = await api.getAccountBalance(connections, accountType)
+    const totalBalance = balanceData.total
+
+    // Endpoint para income (inclui PnL realizado)
+    const incomeEndpoint = "https://fapi.binance.com/fapi/v1/income"
+
+    // Buscar PnL diário (últimas 24h)
+    const timestamp = Date.now()
+    const dailyQueryString = addBinanceCommonParams(
+      `timestamp=${timestamp}&incomeType=REALIZED_PNL&startTime=${oneDayAgo}`,
+    )
+    const dailySignature = await createHmacSignature(dailyQueryString, apiSecret)
+    const dailyUrl = `${incomeEndpoint}?${dailyQueryString}&signature=${dailySignature}`
+
+    console.log(`API: Sending request for daily P&L: ${dailyUrl}`)
+
+    const dailyResponse = await rateLimitedRequest(dailyUrl, {
+      headers: { "X-MBX-APIKEY": apiKey },
+    })
+
+    // Buscar PnL semanal (últimos 7 dias)
+    const weeklyQueryString = addBinanceCommonParams(
+      `timestamp=${timestamp}&incomeType=REALIZED_PNL&startTime=${sevenDaysAgo}`,
+    )
+    const weeklySignature = await createHmacSignature(weeklyQueryString, apiSecret)
+    const weeklyUrl = `${incomeEndpoint}?${weeklyQueryString}&signature=${weeklySignature}`
+
+    console.log(`API: Sending request for weekly P&L: ${weeklyUrl}`)
+
+    const weeklyResponse = await rateLimitedRequest(weeklyUrl, {
+      headers: { "X-MBX-APIKEY": apiKey },
+    })
+
+    // Buscar histórico de trades para calcular alavancagem máxima e número de trades
+    const tradesEndpoint = "https://fapi.binance.com/fapi/v1/userTrades"
+    const tradesQueryString = addBinanceCommonParams(`timestamp=${timestamp}&limit=100&startTime=${oneDayAgo}`)
+    const tradesSignature = await createHmacSignature(tradesQueryString, apiSecret)
+    const tradesUrl = `${tradesEndpoint}?${tradesQueryString}&signature=${tradesSignature}`
+
+    console.log(`API: Sending request for trades history: ${tradesUrl}`)
+
+    const tradesResponse = await rateLimitedRequest(tradesUrl, {
+      headers: { "X-MBX-APIKEY": apiKey },
+    })
+
+    // Verificar se todas as requisições foram bem-sucedidas
+    let dailyData = []
+    let weeklyData = []
+    let tradesData = []
+
+    if (dailyResponse.ok) {
+      dailyData = await dailyResponse.json()
+      console.log("API: Received daily P&L data:", dailyData)
+    } else {
+      console.error(`API: Failed to fetch daily P&L data: ${dailyResponse.status}`)
+    }
+
+    if (weeklyResponse.ok) {
+      weeklyData = await weeklyResponse.json()
+      console.log("API: Received weekly P&L data:", weeklyData)
+    } else {
+      console.error(`API: Failed to fetch weekly P&L data: ${weeklyResponse.status}`)
+    }
+
+    if (tradesResponse.ok) {
+      tradesData = await tradesResponse.json()
+      console.log("API: Received trades data:", tradesData)
+    } else {
+      console.error(`API: Failed to fetch trades data: ${tradesResponse.status}`)
+    }
+
+    // Calcular P&L total
+    const dailyPnL = dailyData.reduce((sum: number, item: any) => sum + Number.parseFloat(item.income), 0)
+    const weeklyPnL = weeklyData.reduce((sum: number, item: any) => sum + Number.parseFloat(item.income), 0)
+
+    // Ajustar o saldo base considerando as movimentações de capital
+    const adjustedDailyBalance = totalBalance + dailyMovements.withdrawals - dailyMovements.deposits
+    const adjustedWeeklyBalance = totalBalance + weeklyMovements.withdrawals - weeklyMovements.deposits
+
+    // Usar Math.max com um valor pequeno para evitar divisão por zero
+    const safeDailyBalance = Math.max(adjustedDailyBalance, 0.0001)
+    const safeWeeklyBalance = Math.max(adjustedWeeklyBalance, 0.0001)
+
+    // Calcular percentuais ajustados
+    const dailyPnLPercentage = (dailyPnL / safeDailyBalance) * 100
+    const weeklyPnLPercentage = (weeklyPnL / safeWeeklyBalance) * 100
+
+    // Calcular alavancagem máxima e número de trades
+    let highestLeverage = 0
+    const uniqueOrderIds = new Set()
+
+    if (Array.isArray(tradesData)) {
+      tradesData.forEach((trade: any) => {
+        // Contar trades únicos (por orderId)
+        uniqueOrderIds.add(trade.orderId)
+
+        // Verificar alavancagem se disponível
+        if (trade.leverage) {
+          const leverage = Number.parseFloat(trade.leverage)
+          if (leverage > highestLeverage) {
+            highestLeverage = leverage
+          }
+        }
+      })
+    }
+
+    const dailyTrades = uniqueOrderIds.size
+
+    console.log("API: Calculated adjusted P&L metrics:", {
+      dailyPnL,
+      dailyPnLPercentage,
+      adjustedDailyBalance,
+      weeklyPnL,
+      weeklyPnLPercentage,
+      adjustedWeeklyBalance,
+      dailyMovements,
+      weeklyMovements,
+      highestLeverage,
+      dailyTrades,
+    })
+
+    return {
+      dailyPnL,
+      dailyPnLPercentage,
+      weeklyPnL,
+      weeklyPnLPercentage,
+      highestLeverage,
+      dailyTrades,
+      // Adicionar informações sobre os ajustes
+      capitalMovements: {
+        daily: dailyMovements,
+        weekly: weeklyMovements,
+      },
+    }
+  } catch (error) {
+    console.error("API: Error calculating adjusted P&L:", error)
+    // Retornar valores padrão em caso de erro
+    return {
+      dailyPnL: 0,
+      dailyPnLPercentage: 0,
+      weeklyPnL: 0,
+      weeklyPnLPercentage: 0,
+      highestLeverage: 0,
+      dailyTrades: 0,
+      capitalMovements: {
+        daily: { deposits: 0, withdrawals: 0 },
+        weekly: { deposits: 0, withdrawals: 0 },
+      },
     }
   }
 }
