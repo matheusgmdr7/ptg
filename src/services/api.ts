@@ -186,6 +186,19 @@ let _cachedTradingData = {
 // Declarar a variável api para uso em funções internas
 const api: any = {}
 
+// Adicionar todas as funções ao objeto api
+api.getAccountBalance = getAccountBalance
+api.getPositions = getPositions
+api.getTrades = getTrades
+api.startWebSocketUpdates = startWebSocketUpdates
+api.getBinanceDeposits = getBinanceDeposits
+api.getBinanceWithdrawals = getBinanceWithdrawals
+api.getBinanceCapitalMovements = getBinanceCapitalMovements
+api.getPnLData = getPnLData
+api.getRiskStatus = getRiskStatus
+api.getLightBehaviors = getLightBehaviors
+api.getCombinedTradingData = getCombinedTradingData
+
 // Remover delays artificiais da função rateLimitedRequest
 async function rateLimitedRequest(url: string, options: RequestInit): Promise<Response> {
   const now = Date.now()
@@ -1570,3 +1583,168 @@ const getPnLData = async (connections: any[]) => {
     }
   }
 }
+
+// Função para obter status de risco com base nos dados de P&L
+const getRiskStatus = async (connections: any[]) => {
+  console.log("API: Getting risk status")
+
+  try {
+    // Obter dados de P&L
+    const pnlData = await getPnLData(connections)
+
+    // Calcular status de risco com base nos dados de P&L
+    let riskLevel = "low"
+    let currentRisk = 0
+
+    // Determinar nível de risco com base na perda diária
+    if (pnlData.dailyPnLPercentage < 0) {
+      const absLoss = Math.abs(pnlData.dailyPnLPercentage)
+
+      if (absLoss >= 8) {
+        riskLevel = "critical"
+        currentRisk = 90 + Math.min(absLoss - 8, 10)
+      } else if (absLoss >= 5) {
+        riskLevel = "high"
+        currentRisk = 70 + ((absLoss - 5) / 3) * 20
+      } else if (absLoss >= 2) {
+        riskLevel = "medium"
+        currentRisk = 40 + ((absLoss - 2) / 3) * 30
+      } else {
+        riskLevel = "low"
+        currentRisk = (absLoss / 2) * 40
+      }
+    }
+
+    return {
+      currentRisk,
+      riskLevel,
+      dailyLoss: pnlData.dailyPnLPercentage < 0 ? Math.abs(pnlData.dailyPnLPercentage) : 0,
+      weeklyLoss: pnlData.weeklyPnLPercentage < 0 ? Math.abs(pnlData.weeklyPnLPercentage) : 0,
+      weeklyProfit: pnlData.weeklyPnLPercentage > 0 ? pnlData.weeklyPnLPercentage : 0,
+      highestLeverage: pnlData.highestLeverage,
+      dailyTrades: pnlData.dailyTrades,
+      tradingAllowed: currentRisk < 100,
+    }
+  } catch (error) {
+    console.error("API: Error getting risk status:", error)
+    return {
+      currentRisk: 0,
+      riskLevel: "low",
+      dailyLoss: 0,
+      weeklyLoss: 0,
+      weeklyProfit: 0,
+      highestLeverage: 0,
+      dailyTrades: 0,
+      tradingAllowed: true,
+    }
+  }
+}
+
+// Função para obter comportamentos de trading simplificados
+const getLightBehaviors = async (connections: any[]) => {
+  console.log("API: Getting light behaviors")
+
+  try {
+    // Obter dados de trades
+    const trades = await getTrades(connections, 50)
+
+    // Analisar comportamentos básicos
+    const behaviors = []
+
+    // Verificar se há trades suficientes para análise
+    if (trades.length >= 10) {
+      // Calcular proporção de compras vs vendas
+      const buys = trades.filter((t) => t.side === "BUY").length
+      const sells = trades.filter((t) => t.side === "SELL").length
+      const buyRatio = buys / trades.length
+
+      // Verificar se há predominância de compras
+      if (buyRatio > 0.7) {
+        behaviors.push({
+          id: "buy-heavy",
+          name: "Predominância de Compras",
+          description: "Você tem realizado significativamente mais compras do que vendas recentemente.",
+          severity: "medium",
+          timestamp: Date.now(),
+        })
+      }
+
+      // Verificar se há predominância de vendas
+      if (buyRatio < 0.3) {
+        behaviors.push({
+          id: "sell-heavy",
+          name: "Predominância de Vendas",
+          description: "Você tem realizado significativamente mais vendas do que compras recentemente.",
+          severity: "medium",
+          timestamp: Date.now(),
+        })
+      }
+
+      // Verificar alavancagem alta
+      const highLeverageTrades = trades.filter((t) => t.leverage && t.leverage > 10).length
+      if (highLeverageTrades > 0) {
+        const highLeverageRatio = highLeverageTrades / trades.length
+
+        if (highLeverageRatio > 0.5) {
+          behaviors.push({
+            id: "high-leverage",
+            name: "Uso Frequente de Alta Alavancagem",
+            description: "Você está usando alavancagem alta em mais da metade de suas operações.",
+            severity: "high",
+            timestamp: Date.now(),
+          })
+        }
+      }
+    }
+
+    return behaviors
+  } catch (error) {
+    console.error("API: Error getting light behaviors:", error)
+    return []
+  }
+}
+
+// Função para obter dados combinados de trading
+const getCombinedTradingData = async (connections: any[]) => {
+  console.log("API: Getting combined trading data")
+
+  try {
+    // Obter dados em paralelo para melhor performance
+    const [balance, positions, trades, pnlData] = await Promise.all([
+      getAccountBalance(connections),
+      getPositions(connections),
+      getTrades(connections, 20),
+      getPnLData(connections),
+    ])
+
+    return {
+      balance,
+      positions,
+      trades,
+      pnlData,
+    }
+  } catch (error) {
+    console.error("API: Error getting combined trading data:", error)
+    return {
+      balance: null,
+      positions: [],
+      trades: [],
+      pnlData: {
+        dailyPnL: 0,
+        dailyPnLPercentage: 0,
+        weeklyPnL: 0,
+        weeklyPnLPercentage: 0,
+        highestLeverage: 0,
+        dailyTrades: 0,
+      },
+    }
+  }
+}
+
+// Adicionar as novas funções ao objeto api
+api.getRiskStatus = getRiskStatus
+api.getLightBehaviors = getLightBehaviors
+api.getCombinedTradingData = getCombinedTradingData
+
+// Exportar o objeto api
+export { api }
