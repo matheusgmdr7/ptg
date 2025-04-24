@@ -53,23 +53,33 @@ const Dashboard: React.FC = () => {
         const accountType = connections[0].accountType || "futures"
         console.log("Dashboard: Buscando saldo para tipo de conta:", accountType)
 
-        // Forçar atualização sem usar cache
-        const balanceData = await api.getAccountBalance(connections, accountType, false, true)
-        console.log("Dashboard: Dados de saldo recebidos:", balanceData)
-
         try {
-          const rawData = api.getRawExchangeData()
-          setRawApiData(rawData)
-        } catch (rawDataError) {
-          console.error("Dashboard: Erro ao obter dados brutos:", rawDataError)
+          // Forçar atualização sem usar cache
+          const balanceData = await api.getAccountBalance(connections, accountType, false, true)
+          console.log("Dashboard: Dados de saldo recebidos:", balanceData)
+
+          try {
+            const rawData = api.getRawExchangeData()
+            setRawApiData(rawData)
+          } catch (rawDataError) {
+            console.error("Dashboard: Erro ao obter dados brutos:", rawDataError)
+          }
+
+          setLocalBalance(balanceData)
+          setBalance(balanceData)
+        } catch (balanceError) {
+          console.error("Dashboard: Erro ao buscar saldo:", balanceError)
+          // Continuar mesmo com erro de saldo
         }
 
-        setLocalBalance(balanceData)
-        setBalance(balanceData)
-
-        const positionsData = await api.getPositions(connections, false, true)
-        console.log("Dashboard: Posições recebidas:", positionsData)
-        setPositions(positionsData)
+        try {
+          const positionsData = await api.getPositions(connections, false, true)
+          console.log("Dashboard: Posições recebidas:", positionsData)
+          setPositions(positionsData)
+        } catch (positionsError) {
+          console.error("Dashboard: Erro ao buscar posições:", positionsError)
+          // Continuar mesmo com erro de posições
+        }
 
         try {
           const tradesData = await api.getTrades(connections, 100)
@@ -145,6 +155,9 @@ const Dashboard: React.FC = () => {
         }
       } catch (error) {
         console.error("Dashboard: Error in loadInitialData:", error)
+      } finally {
+        // Garantir que isLoading seja definido como false mesmo em caso de erro
+        setIsLoading(false)
       }
     }
 
@@ -167,6 +180,44 @@ const Dashboard: React.FC = () => {
       clearInterval(intervalId)
     }
   }, []) // Dependências vazias para configurar apenas uma vez
+
+  // Efeito para verificar movimentações não registradas
+  useEffect(() => {
+    // Verificar se há movimentações de capital não registradas que podem afetar o saldo
+    const checkForUnreportedMovements = async () => {
+      if (connections && connections.length > 0 && localBalance) {
+        try {
+          // Importar o serviço de movimentação de capital
+          const { detectUnreportedMovements } = await import("../services/capitalMovementService")
+
+          // Obter o saldo anterior (poderia ser armazenado em localStorage)
+          const previousBalance = localStorage.getItem("previousBalance")
+            ? Number.parseFloat(localStorage.getItem("previousBalance") || "0")
+            : localBalance.total
+
+          // Calcular PnL aproximado (simplificado)
+          const pnl = 0 // Em uma implementação real, você calcularia o PnL desde a última verificação
+
+          // Detectar possíveis movimentações não registradas
+          const result = await detectUnreportedMovements(previousBalance, localBalance.total, pnl)
+
+          if (result.detected) {
+            console.log("Dashboard: Possível movimentação não registrada detectada:", result)
+            // Você pode mostrar um alerta ou notificação aqui
+          }
+
+          // Armazenar o saldo atual para a próxima verificação
+          localStorage.setItem("previousBalance", localBalance.total.toString())
+        } catch (error) {
+          console.error("Dashboard: Erro ao verificar movimentações não registradas:", error)
+        }
+      }
+    }
+
+    if (updateCount > 0) {
+      checkForUnreportedMovements()
+    }
+  }, [connections, localBalance, updateCount])
 
   useEffect(() => {
     if (trades && trades.length > 0) {
@@ -243,43 +294,6 @@ const Dashboard: React.FC = () => {
       accountType: "futures",
     }
 
-  useEffect(() => {
-    // Verificar se há movimentações de capital não registradas que podem afetar o saldo
-    const checkForUnreportedMovements = async () => {
-      if (connections && connections.length > 0 && localBalance) {
-        try {
-          // Importar o serviço de movimentação de capital
-          const { detectUnreportedMovements } = await import("../services/capitalMovementService")
-
-          // Obter o saldo anterior (poderia ser armazenado em localStorage)
-          const previousBalance = localStorage.getItem("previousBalance")
-            ? Number.parseFloat(localStorage.getItem("previousBalance") || "0")
-            : localBalance.total
-
-          // Calcular PnL aproximado (simplificado)
-          const pnl = 0 // Em uma implementação real, você calcularia o PnL desde a última verificação
-
-          // Detectar possíveis movimentações não registradas
-          const result = await detectUnreportedMovements(previousBalance, localBalance.total, pnl)
-
-          if (result.detected) {
-            console.log("Dashboard: Possível movimentação não registrada detectada:", result)
-            // Você pode mostrar um alerta ou notificação aqui
-          }
-
-          // Armazenar o saldo atual para a próxima verificação
-          localStorage.setItem("previousBalance", localBalance.total.toString())
-        } catch (error) {
-          console.error("Dashboard: Erro ao verificar movimentações não registradas:", error)
-        }
-      }
-    }
-
-    if (updateCount > 0) {
-      checkForUnreportedMovements()
-    }
-  }, [connections, localBalance, updateCount])
-
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -323,40 +337,6 @@ const Dashboard: React.FC = () => {
                 Atualizar
               </>
             )}
-          </button>
-          <button
-            onClick={async () => {
-              try {
-                setIsLoading(true)
-                toast.info("Sincronizando dados com a corretora...")
-
-                // Forçar atualização completa sem usar cache
-                if (connections && connections.length > 0) {
-                  const accountType = connections[0].accountType || "futures"
-                  const balanceData = await api.getAccountBalance(connections, accountType, false, true)
-                  setLocalBalance(balanceData)
-                  setBalance(balanceData)
-
-                  const positionsData = await api.getPositions(connections, false, true)
-                  setPositions(positionsData)
-
-                  console.log("Dashboard: Sincronização forçada concluída")
-                  toast.success("Dados sincronizados com sucesso")
-                } else {
-                  toast.error("Nenhuma corretora conectada para sincronizar")
-                }
-              } catch (error) {
-                console.error("Dashboard: Erro na sincronização forçada:", error)
-                toast.error("Erro ao sincronizar dados")
-              } finally {
-                setIsLoading(false)
-              }
-            }}
-            className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-lg transition-all duration-300 font-medium relative overflow-hidden shadow-lg shadow-emerald-700/20 hover:shadow-emerald-600/40 disabled:opacity-50 disabled:cursor-not-allowed ml-2"
-            disabled={isLoading}
-          >
-            <RefreshCw size={16} className="mr-2" />
-            Sincronizar
           </button>
         </div>
       </div>
