@@ -6,12 +6,22 @@ import { useAppStore } from "../store"
 import { api } from "../services/api"
 import { useTranslation } from "react-i18next"
 import { format, subDays } from "date-fns"
-import { ArrowUpRight, ArrowDownRight, RefreshCw, AlertTriangle, Wallet, LineChart, ArrowRight, History } from 'lucide-react'
+import {
+  ArrowUpRight,
+  ArrowDownRight,
+  RefreshCw,
+  AlertTriangle,
+  Wallet,
+  LineChart,
+  ArrowRight,
+  History,
+} from "lucide-react"
 import { Link } from "react-router-dom"
 import { toast } from "react-toastify"
 import RiskStatusCard from "../components/RiskStatusCard"
 import CapitalMovementButton from "../components/CapitalMovementButton"
 import UnreportedMovementAlert from "../components/UnreportedMovementAlert"
+import CapitalMovementHistory from "../components/CapitalMovementHistory"
 
 const Dashboard: React.FC = () => {
   const { balance, positions, trades, connections, setBalance, setPositions, setTrades } = useAppStore()
@@ -502,7 +512,8 @@ const Dashboard: React.FC = () => {
         <div className="p-6 relative z-10">
           <div className="mb-4 p-3 bg-violet-900/20 border border-violet-700/30 rounded-lg">
             <p className="text-sm text-gray-300">
-              <strong>Dica:</strong> Registre suas movimentações de capital para manter suas métricas de risco precis  Registre suas movimentações de capital para manter suas métricas de risco precisas e evitar distorções nos cálculos de PnL.
+              <strong>Dica:</strong> Registre suas movimentações de capital para manter suas métricas de risco precisas
+              e evitar distorções nos cálculos de PnL.
             </p>
           </div>
           <div className="space-y-4">
