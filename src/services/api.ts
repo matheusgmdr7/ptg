@@ -155,155 +155,15 @@ const _cacheTimestamps = {
 const _activeWebSockets = {}
 
 // Adicionar função para iniciar WebSocket
-const startWebSocketUpdates = async (connections, callback) => {
-  if (!connections || connections.length === 0) {
-    console.log("API: No connections available for WebSocket updates")
-    return false
-  }
-
-  try {
-    const connection = connections[0]
-    const exchange = connection.exchange.toLowerCase()
-    const accountType = connection.accountType || "futures"
-
-    // Gerar um ID único para esta conexão WebSocket
-    const wsId = `${exchange}-${accountType}-${Date.now()}`
-
-    if (exchange === "binance") {
-      // Fechar WebSocket existente se houver
-      if (_activeWebSockets[exchange]) {
-        console.log(`API: Closing existing WebSocket for ${exchange}`)
-        _activeWebSockets[exchange].close()
-      }
-
-      console.log(`API: Starting WebSocket updates for ${exchange} ${accountType}`)
-
-      // Criar URL do WebSocket baseado no tipo de conta
-      let wsUrl = ""
-      if (accountType === "futures") {
-        wsUrl = "wss://fstream.binance.com/ws"
-      } else {
-        wsUrl = "wss://stream.binance.com:9443/ws"
-      }
-
-      // Criar conexão WebSocket
-      const ws = new WebSocket(wsUrl)
-
-      ws.onopen = () => {
-        console.log(`API: WebSocket connection opened for ${exchange}`)
-
-        // Obter símbolos das posições atuais para assinar
-        api.getPositions(connections).then((positions) => {
-          const symbols = positions.map((p) => p.symbol.toLowerCase())
-
-          // Se não houver posições, assinar pelo menos um símbolo comum
-          if (symbols.length === 0) {
-            symbols.push("btcusdt")
-          }
-
-          // Criar payload de assinatura para múltiplos streams
-          const streams = []
-
-          // Adicionar streams para cada símbolo
-          symbols.forEach((symbol) => {
-            streams.push(`${symbol}@markPrice`)
-            if (accountType === "futures") {
-              streams.push(`${symbol}@bookTicker`)
-            }
-          })
-
-          // Adicionar stream de conta se for futures
-          if (accountType === "futures") {
-            // Nota: stream de conta requer autenticação, que não implementamos aqui
-            // Isso seria feito com listenKey em produção
-          }
-
-          // Enviar solicitação de assinatura
-          const subscribePayload = {
-            method: "SUBSCRIBE",
-            params: streams,
-            id: 1,
-          }
-
-          ws.send(JSON.stringify(subscribePayload))
-        })
-      }
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-
-          // Processar diferentes tipos de mensagens
-          if (data.e === "markPriceUpdate") {
-            // Atualização de preço de marcação
-            const markPrice = Number.parseFloat(data.p)
-            const symbol = data.s
-
-            // Atualizar posições com novo preço de marcação
-            api.getPositions(connections, false, true).then((positions) => {
-              const updatedPositions = positions.map((pos) => {
-                if (pos.symbol === symbol) {
-                  return {
-                    ...pos,
-                    markPrice: markPrice,
-                    // Recalcular PnL se tivermos os dados necessários
-                    unrealizedPnl: pos.size * (markPrice - pos.entryPrice) * (pos.side === "long" ? 1 : -1),
-                  }
-                }
-                return pos
-              })
-
-              // Enviar posições atualizadas via callback
-              callback({
-                type: "positions",
-                positions: updatedPositions,
-              })
-            })
-          }
-          // Outros tipos de mensagens podem ser processados aqui
-        } catch (error) {
-          console.error("API: Error processing WebSocket message:", error)
-        }
-      }
-
-      ws.onerror = (error) => {
-        console.error(`API: WebSocket error for ${exchange}:`, error)
-      }
-
-      ws.onclose = () => {
-        console.log(`API: WebSocket connection closed for ${exchange}`)
-        delete _activeWebSockets[exchange]
-
-        // Tentar reconectar após 30 segundos
-        setTimeout(() => {
-          if (!_activeWebSockets[exchange]) {
-            console.log(`API: Attempting to reconnect WebSocket for ${exchange}`)
-            startWebSocketUpdates(connections, callback)
-          }
-        }, 30000)
-      }
-
-      // Armazenar referência ao WebSocket
-      _activeWebSockets[exchange] = ws
-
-      // Configurar ping periódico para manter a conexão viva
-      const pingInterval = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ method: "PING" }))
-        } else {
-          clearInterval(pingInterval)
-        }
-      }, 30000)
-
-      return true
-    } else {
-      console.log(`API: WebSocket not implemented for ${exchange}`)
-      return false
-    }
-  } catch (error) {
-    console.error("API: Error starting WebSocket updates:", error)
-    return false
-  }
+// Corrigir a variável de cache global
+let _cachedTradingData = {
+  timestamp: 0,
+  data: {
+    balance: null,
+    positions: [],
+    trades: [],
+    pnlData: {},
+  },
 }
 
 // Modificar a função getAccountBalance para suportar carregamento essencial
@@ -313,21 +173,26 @@ const getAccountBalance = async (
   essentialOnly = false,
 ): Promise<AccountBalance> => {
   console.log(`API: Getting account balance for: ${accountType}, essentialOnly: ${essentialOnly}`)
-  console.log("API: Current connections:", connections)
 
-  if (connections.length === 0) {
-    console.log("API: No connected exchanges, returning zero balance")
+  // Validar as conexões recebidas
+  if (!connections || !Array.isArray(connections) || connections.length === 0) {
+    console.log("API: No connected exchanges or invalid connections, returning zero balance")
     return {
       total: 0,
       available: 0,
       inPositions: 0,
-      currency: "",
+      currency: "USD",
       accountType: accountType,
     }
   }
 
   // Verificar cache se não for apenas dados essenciais
-  if (!essentialOnly && _cachedTradingData && Date.now() - _cacheTimestamps.balance < 10000) {
+  if (
+    !essentialOnly &&
+    _cachedTradingData &&
+    Date.now() - _cachedTradingData.timestamp < 10000 &&
+    _cachedTradingData.data.balance
+  ) {
     console.log("API: Using cached balance data (valid for 10 seconds)")
     return _cachedTradingData.data.balance
   }
@@ -335,6 +200,13 @@ const getAccountBalance = async (
   try {
     // Obter a primeira conexão disponível
     const connection = connections[0]
+
+    // Validar a conexão
+    if (!connection || !connection.exchange || !connection.apiKey || !connection.apiSecret) {
+      console.error("API: Invalid connection object:", connection)
+      throw new Error("Invalid connection configuration")
+    }
+
     const exchange = connection.exchange.toLowerCase()
     const apiKey = connection.apiKey
     const apiSecret = connection.apiSecret
@@ -387,7 +259,7 @@ const getAccountBalance = async (
           }
 
           exchangeData = await response.json()
-          console.log("API: Raw Binance response:", exchangeData)
+          console.log("API: Raw Binance response received")
 
           // Verificar se a resposta contém os campos esperados
           if (accountType === "futures" && !exchangeData.totalWalletBalance) {
@@ -446,7 +318,7 @@ const getAccountBalance = async (
 
     // Armazenar os dados brutos para depuração
     rawExchangeData = exchangeData
-    console.log("API: Raw exchange data received:", exchangeData)
+    console.log("API: Raw exchange data processed")
 
     // Processar os dados com base na corretora e tipo de conta
     let processedBalance: AccountBalance
@@ -465,8 +337,8 @@ const getAccountBalance = async (
         // Se for apenas dados essenciais, simplificar o processamento
         if (essentialOnly) {
           processedBalance = {
-            total: Number(exchangeData.totalWalletBalance) || 0,
-            available: Number(exchangeData.availableBalance) || 0,
+            total: Number.parseFloat(exchangeData.totalWalletBalance || "0"),
+            available: Number.parseFloat(exchangeData.availableBalance || "0"),
             inPositions: 0, // Simplificado para carregamento rápido
             currency: "USD",
             accountType: accountType,
@@ -474,33 +346,26 @@ const getAccountBalance = async (
         } else {
           // Calcular o saldo em posições de forma mais precisa
           // Na API da Binance, o saldo em posições pode ser calculado de várias formas
-          const totalMargin = Number(exchangeData.totalPositionInitialMargin || exchangeData.totalInitialMargin || 0)
-          const unrealizedProfit = Number(exchangeData.totalUnrealizedProfit || 0)
-
-          console.log("API: Binance position details:", {
-            totalMargin,
-            unrealizedProfit,
-            positions: exchangeData.positions || "No positions data",
-          })
+          const totalMargin = Number.parseFloat(
+            exchangeData.totalPositionInitialMargin || exchangeData.totalInitialMargin || "0",
+          )
+          const unrealizedProfit = Number.parseFloat(exchangeData.totalUnrealizedProfit || "0")
 
           processedBalance = {
-            total: Number(exchangeData.totalWalletBalance) || 0,
-            available: Number(exchangeData.availableBalance) || 0,
+            total: Number.parseFloat(exchangeData.totalWalletBalance || "0"),
+            available: Number.parseFloat(exchangeData.availableBalance || "0"),
             inPositions: totalMargin, // Usar o valor de margem total como saldo em posições
             currency: "USD",
             accountType: accountType,
           }
         }
-
-        // Adicionar log detalhado para depuração
-        console.log("API: Processed Binance futures balance:", processedBalance)
       } else {
         // Para contas spot da Binance
         const usdtBalance = exchangeData.balances?.find((b: any) => b.asset === "USDT")
         processedBalance = {
-          total: Number(exchangeData.totalAssetOfUsdt) || 0,
-          available: Number(usdtBalance?.free) || 0,
-          inPositions: Number(usdtBalance?.locked) || 0,
+          total: Number.parseFloat(exchangeData.totalAssetOfUsdt || "0"),
+          available: Number.parseFloat(usdtBalance?.free || "0"),
+          inPositions: Number.parseFloat(usdtBalance?.locked || "0"),
           currency: "USD",
           accountType: accountType,
         }
@@ -508,15 +373,13 @@ const getAccountBalance = async (
     } else {
       // Processamento genérico para outras corretoras
       processedBalance = {
-        total: Number(exchangeData.balance) || 0,
-        available: Number(exchangeData.available) || 0,
-        inPositions: Number(exchangeData.used) || 0,
+        total: Number.parseFloat(exchangeData.balance || "0"),
+        available: Number.parseFloat(exchangeData.available || "0"),
+        inPositions: Number.parseFloat(exchangeData.used || "0"),
         currency: exchangeData.currency || "USD",
         accountType: accountType,
       }
     }
-
-    console.log("API: Processed balance data:", processedBalance)
 
     // Verificar se os valores são números válidos
     if (isNaN(processedBalance.total) || isNaN(processedBalance.available) || isNaN(processedBalance.inPositions)) {
@@ -539,13 +402,12 @@ const getAccountBalance = async (
 
     // Atualizar cache se não for apenas dados essenciais
     if (!essentialOnly) {
-      if (!_cachedTradingData) {
-        _cachedTradingData = {
-          timestamp: Date.now(),
-          data: { balance: processedBalance, positions: [], trades: [], pnlData: {} },
-        }
-      } else {
-        _cachedTradingData.data.balance = processedBalance
+      _cachedTradingData = {
+        timestamp: Date.now(),
+        data: {
+          ..._cachedTradingData.data,
+          balance: processedBalance,
+        },
       }
       _cacheTimestamps.balance = Date.now()
     }
@@ -576,15 +438,22 @@ const getAccountBalance = async (
 // Modificar a função getPositions para suportar carregamento essencial e usar cache
 const getPositions = async (connections: any[], essentialOnly = false, skipCache = false) => {
   console.log(`API: Getting positions (essentialOnly: ${essentialOnly}, skipCache: ${skipCache})`)
-  console.log("API: Connections received:", connections)
 
-  if (!connections || connections.length === 0) {
-    console.log("API: No connected exchanges, returning empty positions")
+  // Validar as conexões recebidas
+  if (!connections || !Array.isArray(connections) || connections.length === 0) {
+    console.log("API: No connected exchanges or invalid connections, returning empty positions")
     return []
   }
 
   // Verificar cache se não for apenas dados essenciais e não estiver pulando o cache
-  if (!essentialOnly && !skipCache && _cachedTradingData && Date.now() - _cacheTimestamps.positions < 10000) {
+  if (
+    !essentialOnly &&
+    !skipCache &&
+    _cachedTradingData &&
+    Date.now() - _cachedTradingData.timestamp < 10000 &&
+    _cachedTradingData.data.positions &&
+    _cachedTradingData.data.positions.length > 0
+  ) {
     console.log("API: Using cached positions data (valid for 10 seconds)")
     return _cachedTradingData.data.positions
   }
@@ -592,6 +461,13 @@ const getPositions = async (connections: any[], essentialOnly = false, skipCache
   try {
     // Obter a primeira conexão disponível
     const connection = connections[0]
+
+    // Validar a conexão
+    if (!connection || !connection.exchange || !connection.apiKey || !connection.apiSecret) {
+      console.error("API: Invalid connection object:", connection)
+      return []
+    }
+
     const exchange = connection.exchange.toLowerCase()
     const apiKey = connection.apiKey
     const apiSecret = connection.apiSecret
@@ -647,19 +523,19 @@ const getPositions = async (connections: any[], essentialOnly = false, skipCache
         }
 
         const positionsData = await response.json()
-        console.log("API: Raw Binance positions response:", positionsData)
+        console.log(`API: Raw Binance positions response received with ${positionsData.length} items`)
 
         // Processar as posições da Binance
         // Filtrar apenas posições com quantidade diferente de zero
         positions = positionsData
-          .filter((pos: any) => Number(pos.positionAmt) !== 0)
+          .filter((pos: any) => Number.parseFloat(pos.positionAmt || "0") !== 0)
           .map((pos: any) => {
-            const positionSize = Number(pos.positionAmt)
-            const entryPrice = Number(pos.entryPrice)
-            const markPrice = Number(pos.markPrice)
-            const leverage = Number(pos.leverage)
-            const unrealizedPnl = essentialOnly ? 0 : Number(pos.unRealizedProfit) // Simplificar para carregamento rápido
-            const liquidationPrice = essentialOnly ? 0 : Number(pos.liquidationPrice) // Simplificar para carregamento rápido
+            const positionSize = Number.parseFloat(pos.positionAmt || "0")
+            const entryPrice = Number.parseFloat(pos.entryPrice || "0")
+            const markPrice = Number.parseFloat(pos.markPrice || "0")
+            const leverage = Number.parseFloat(pos.leverage || "1")
+            const unrealizedPnl = essentialOnly ? 0 : Number.parseFloat(pos.unRealizedProfit || "0") // Simplificar para carregamento rápido
+            const liquidationPrice = essentialOnly ? 0 : Number.parseFloat(pos.liquidationPrice || "0") // Simplificar para carregamento rápido
 
             return {
               id: `${pos.symbol}-${Date.now()}`,
@@ -689,13 +565,12 @@ const getPositions = async (connections: any[], essentialOnly = false, skipCache
 
     // Atualizar cache se não for apenas dados essenciais
     if (!essentialOnly) {
-      if (!_cachedTradingData) {
-        _cachedTradingData = {
-          timestamp: Date.now(),
-          data: { balance: null, positions: positions, trades: [], pnlData: {} },
-        }
-      } else {
-        _cachedTradingData.data.positions = positions
+      _cachedTradingData = {
+        timestamp: Date.now(),
+        data: {
+          ..._cachedTradingData.data,
+          positions: positions,
+        },
       }
       _cacheTimestamps.positions = Date.now()
     }
@@ -704,6 +579,190 @@ const getPositions = async (connections: any[], essentialOnly = false, skipCache
   } catch (error) {
     console.error("API: Error fetching positions:", error)
     return []
+  }
+}
+
+// Modificar a função startWebSocketUpdates para melhor tratamento de erros
+const startWebSocketUpdates = async (connections, callback) => {
+  if (!connections || !Array.isArray(connections) || connections.length === 0) {
+    console.log("API: No connections available for WebSocket updates")
+    return false
+  }
+
+  try {
+    const connection = connections[0]
+
+    // Validar a conexão
+    if (!connection || !connection.exchange) {
+      console.error("API: Invalid connection object for WebSocket:", connection)
+      return false
+    }
+
+    const exchange = connection.exchange.toLowerCase()
+    const accountType = connection.accountType || "futures"
+
+    // Gerar um ID único para esta conexão WebSocket
+    const wsId = `${exchange}-${accountType}-${Date.now()}`
+
+    if (exchange === "binance") {
+      // Fechar WebSocket existente se houver
+      if (_activeWebSockets[exchange]) {
+        console.log(`API: Closing existing WebSocket for ${exchange}`)
+        try {
+          _activeWebSockets[exchange].close()
+        } catch (closeError) {
+          console.error(`API: Error closing existing WebSocket:`, closeError)
+        }
+      }
+
+      console.log(`API: Starting WebSocket updates for ${exchange} ${accountType}`)
+
+      // Criar URL do WebSocket baseado no tipo de conta
+      let wsUrl = ""
+      if (accountType === "futures") {
+        wsUrl = "wss://fstream.binance.com/ws"
+      } else {
+        wsUrl = "wss://stream.binance.com:9443/ws"
+      }
+
+      try {
+        // Criar conexão WebSocket
+        const ws = new WebSocket(wsUrl)
+
+        ws.onopen = () => {
+          console.log(`API: WebSocket connection opened for ${exchange}`)
+
+          // Obter símbolos das posições atuais para assinar
+          api
+            .getPositions(connections)
+            .then((positions) => {
+              try {
+                const symbols = positions.map((p) => p.symbol.toLowerCase())
+
+                // Se não houver posições, assinar pelo menos um símbolo comum
+                if (symbols.length === 0) {
+                  symbols.push("btcusdt")
+                }
+
+                // Criar payload de assinatura para múltiplos streams
+                const streams = []
+
+                // Adicionar streams para cada símbolo
+                symbols.forEach((symbol) => {
+                  streams.push(`${symbol}@markPrice`)
+                  if (accountType === "futures") {
+                    streams.push(`${symbol}@bookTicker`)
+                  }
+                })
+
+                // Adicionar stream de conta se for futures
+                if (accountType === "futures") {
+                  // Nota: stream de conta requer autenticação, que não implementamos aqui
+                  // Isso seria feito com listenKey em produção
+                }
+
+                // Enviar solicitação de assinatura
+                const subscribePayload = {
+                  method: "SUBSCRIBE",
+                  params: streams,
+                  id: 1,
+                }
+
+                ws.send(JSON.stringify(subscribePayload))
+              } catch (subscribeError) {
+                console.error("API: Error subscribing to WebSocket streams:", subscribeError)
+              }
+            })
+            .catch((posError) => {
+              console.error("API: Error getting positions for WebSocket:", posError)
+            })
+        }
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+
+            // Processar diferentes tipos de mensagens
+            if (data.e === "markPriceUpdate") {
+              // Atualização de preço de marcação
+              const markPrice = Number.parseFloat(data.p || "0")
+              const symbol = data.s
+
+              // Atualizar posições com novo preço de marcação
+              api
+                .getPositions(connections, false, true)
+                .then((positions) => {
+                  if (!positions || !Array.isArray(positions)) return
+
+                  const updatedPositions = positions.map((pos) => {
+                    if (pos.symbol === symbol) {
+                      return {
+                        ...pos,
+                        markPrice: markPrice,
+                        // Recalcular PnL se tivermos os dados necessários
+                        unrealizedPnl: pos.size * (markPrice - pos.entryPrice) * (pos.side === "long" ? 1 : -1),
+                      }
+                    }
+                    return pos
+                  })
+
+                  // Enviar posições atualizadas via callback
+                  callback({
+                    type: "positions",
+                    positions: updatedPositions,
+                  })
+                })
+                .catch((posError) => {
+                  console.error("API: Error updating positions from WebSocket:", posError)
+                })
+            }
+            // Outros tipos de mensagens podem ser processados aqui
+          } catch (error) {
+            console.error("API: Error processing WebSocket message:", error)
+          }
+        }
+
+        ws.onerror = (error) => {
+          console.error(`API: WebSocket error for ${exchange}:`, error)
+        }
+
+        ws.onclose = () => {
+          console.log(`API: WebSocket connection closed for ${exchange}`)
+          delete _activeWebSockets[exchange]
+
+          // Tentar reconectar após 30 segundos
+          setTimeout(() => {
+            if (!_activeWebSockets[exchange]) {
+              console.log(`API: Attempting to reconnect WebSocket for ${exchange}`)
+              startWebSocketUpdates(connections, callback)
+            }
+          }, 30000)
+        }
+
+        // Armazenar referência ao WebSocket
+        _activeWebSockets[exchange] = ws
+
+        // Configurar ping periódico para manter a conexão viva
+        const pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ method: "PING" }))
+          } else {
+            clearInterval(pingInterval)
+          }
+        }, 30000)
+
+        return true
+      } catch (wsError) {
+        console.error(`API: Error creating WebSocket for ${exchange}:`, wsError)
+        return false
+      }
+    } else {
+      console.log(`API: WebSocket not implemented for ${exchange}`)
+      return false
+    }
+  } catch (error) {
+    console.error("API: Error starting WebSocket updates:", error)
+    return false
   }
 }
 
@@ -718,7 +777,13 @@ async function rateLimitedRequest(url: string, options: RequestInit): Promise<Re
   }
 
   lastRequestTime = Date.now()
-  return fetch(url, options)
+
+  try {
+    return await fetch(url, options)
+  } catch (error) {
+    console.error("API: Error in rateLimitedRequest:", error)
+    throw error
+  }
 }
 
 // Exportar o objeto API com todas as funções
@@ -1718,4 +1783,72 @@ export const api = {
   _cachedTradingData: null,
   _cacheTimestamps,
   _activeWebSockets,
+  // Corrigir a função connectExchange para retornar um resultado válido
+}
+
+api.connectExchange = async (exchange: string, apiKey: string, apiSecret: string, accountType: string) => {
+  console.log(`API: Connecting to ${exchange} ${accountType} with API key: ${apiKey.substring(0, 4)}...`)
+
+  try {
+    // Validar os parâmetros
+    if (!exchange || !apiKey || !apiSecret || !accountType) {
+      return { success: false, message: "Parâmetros de conexão inválidos" }
+    }
+
+    // Implementação específica para Binance
+    if (exchange.toLowerCase() === "binance") {
+      try {
+        // Testar a conexão fazendo uma chamada simples à API
+        const timestamp = Date.now()
+        let endpoint = ""
+
+        if (accountType === "futures") {
+          endpoint = "https://fapi.binance.com/fapi/v1/time"
+        } else {
+          endpoint = "https://api.binance.com/api/v3/time"
+        }
+
+        // Criar a string para assinatura
+        const queryString = `timestamp=${timestamp}`
+        const signature = await createHmacSignature(queryString, apiSecret)
+
+        // URL completa
+        const url = `${endpoint}?${queryString}&signature=${signature}`
+
+        // Fazer a requisição
+        const response = await fetch(url, {
+          method: "GET",
+          headers: {
+            "X-MBX-APIKEY": apiKey,
+          },
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error(`API: Binance connection test failed: ${response.status}`, errorText)
+          return { success: false, message: `Falha na conexão: ${response.status} - ${errorText}` }
+        }
+
+        // Se chegou aqui, a conexão foi bem-sucedida
+        console.log("API: Binance connection test successful")
+        return { success: true, message: "Conexão estabelecida com sucesso" }
+      } catch (error) {
+        console.error("API: Error testing Binance connection:", error)
+        return {
+          success: false,
+          message: `Erro ao testar conexão: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
+        }
+      }
+    } else {
+      // Outras corretoras
+      console.log(`API: Exchange ${exchange} not fully supported, using mock connection`)
+      return { success: true, message: "Conexão simulada estabelecida com sucesso" }
+    }
+  } catch (error) {
+    console.error("API: Error in connectExchange:", error)
+    return {
+      success: false,
+      message: `Erro interno: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
+    }
+  }
 }
