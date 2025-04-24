@@ -166,16 +166,13 @@ let _cachedTradingData = {
   },
 }
 
-// Modificar a função getAccountBalance para aceitar um parâmetro skipCache
+// Modificar a função getAccountBalance para suportar carregamento essencial
 const getAccountBalance = async (
   connections: any[],
   accountType: "spot" | "futures" = "futures",
   essentialOnly = false,
-  skipCache = false, // Novo parâmetro
 ): Promise<AccountBalance> => {
-  console.log(
-    `API: Getting account balance for: ${accountType}, essentialOnly: ${essentialOnly}, skipCache: ${skipCache}`,
-  )
+  console.log(`API: Getting account balance for: ${accountType}, essentialOnly: ${essentialOnly}`)
 
   // Validar as conexões recebidas
   if (!connections || !Array.isArray(connections) || connections.length === 0) {
@@ -189,10 +186,9 @@ const getAccountBalance = async (
     }
   }
 
-  // Verificar cache se não for apenas dados essenciais e não estiver pulando o cache
+  // Verificar cache se não for apenas dados essenciais
   if (
     !essentialOnly &&
-    !skipCache && // Adicionar verificação do novo parâmetro
     _cachedTradingData &&
     Date.now() - _cachedTradingData.timestamp < 10000 &&
     _cachedTradingData.data.balance
@@ -801,22 +797,9 @@ export const api = {
 
   checkRealConnections: async (connections: any[]) => {
     console.log("API: Checking real connections:", connections)
-
-    // Se não houver conexões, retornar false
-    if (!connections || !Array.isArray(connections) || connections.length === 0) {
-      console.log("API: No connected exchanges or invalid connections")
-      return false
-    }
-
-    // Verificar se a primeira conexão é válida
-    const connection = connections[0]
-    if (!connection || !connection.exchange || !connection.apiKey || !connection.apiSecret) {
-      console.error("API: Invalid connection object:", connection)
-      return false
-    }
-
-    console.log("API: Has connected exchanges:", true)
-    return true
+    const hasConnections = connections.length > 0
+    console.log("API: Has connected exchanges:", hasConnections)
+    return hasConnections
   },
 
   getRawExchangeData: () => {
