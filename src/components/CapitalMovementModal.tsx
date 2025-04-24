@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { X, DollarSign, ArrowDownCircle, ArrowUpCircle } from "lucide-react"
 import { supabase } from "../lib/supabase"
 import { toast } from "react-toastify"
@@ -11,14 +11,40 @@ interface CapitalMovementModalProps {
   isOpen: boolean
   onClose: () => void
   onSuccess: () => void
+  initialValues?: {
+    amount?: number
+    type?: "deposit" | "withdrawal"
+    description?: string
+    binance_tx_id?: string
+    binance_timestamp?: number
+  }
 }
 
-const CapitalMovementModal: React.FC<CapitalMovementModalProps> = ({ isOpen, onClose, onSuccess }) => {
+const CapitalMovementModal: React.FC<CapitalMovementModalProps> = ({ isOpen, onClose, onSuccess, initialValues }) => {
   const [amount, setAmount] = useState<string>("")
   const [type, setType] = useState<"deposit" | "withdrawal">("withdrawal")
   const [description, setDescription] = useState<string>("")
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false)
+  const [isFromBinance, setIsFromBinance] = useState<boolean>(false)
+  const [binanceTxId, setBinanceTxId] = useState<string | undefined>(undefined)
+  const [binanceTimestamp, setBinanceTimestamp] = useState<number | undefined>(undefined)
   const { balance } = useAppStore()
+
+  // Preencher o formulário com valores iniciais, se fornecidos
+  useEffect(() => {
+    if (initialValues) {
+      if (initialValues.amount) setAmount(initialValues.amount.toString())
+      if (initialValues.type) setType(initialValues.type)
+      if (initialValues.description) setDescription(initialValues.description)
+      if (initialValues.binance_tx_id) {
+        setBinanceTxId(initialValues.binance_tx_id)
+        setIsFromBinance(true)
+      }
+      if (initialValues.binance_timestamp) {
+        setBinanceTimestamp(initialValues.binance_timestamp)
+      }
+    }
+  }, [initialValues])
 
   if (!isOpen) return null
 
@@ -47,6 +73,9 @@ const CapitalMovementModal: React.FC<CapitalMovementModalProps> = ({ isOpen, onC
         type,
         description: description || (type === "deposit" ? "Depósito" : "Saque"),
         reported_by: "user",
+        source: isFromBinance ? "binance" : "manual",
+        binance_tx_id: binanceTxId,
+        binance_timestamp: binanceTimestamp,
       })
 
       if (error) {
@@ -62,6 +91,9 @@ const CapitalMovementModal: React.FC<CapitalMovementModalProps> = ({ isOpen, onC
       // Limpar formulário
       setAmount("")
       setDescription("")
+      setIsFromBinance(false)
+      setBinanceTxId(undefined)
+      setBinanceTimestamp(undefined)
     } catch (error) {
       console.error("Erro:", error)
       toast.error("Ocorreu um erro ao processar sua solicitação")
@@ -82,6 +114,15 @@ const CapitalMovementModal: React.FC<CapitalMovementModalProps> = ({ isOpen, onC
               <X size={20} />
             </button>
           </div>
+
+          {isFromBinance && (
+            <div className="mb-4 p-3 bg-violet-900/20 border border-violet-700/30 rounded-lg">
+              <p className="text-sm text-violet-300">
+                <strong>Movimentação detectada da Binance:</strong> Você pode revisar ou editar os detalhes antes de
+                salvar.
+              </p>
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
