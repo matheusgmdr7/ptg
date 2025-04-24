@@ -1207,6 +1207,93 @@ export const api = {
     }
   },
 
+  // Modifique a função getBehaviors para integrar corretamente com as funções de análise de comportamento
+  getBehaviors: async (connections: any[], days = 30) => {
+    console.log(`API: Getting behaviors for the last ${days} days`)
+    console.log("API: Connections received:", connections)
+
+    if (!connections || connections.length === 0) {
+      console.log("API: No connected exchanges, returning empty behaviors")
+      return []
+    }
+
+    try {
+      // Importar as funções de análise de comportamento
+      const {
+        detectExcessiveLeverage,
+        detectEmotionalTrading,
+        detectRiskLimitViolation,
+        detectMultipleHighLeveragePositions,
+      } = await import("../services/behaviorAnalysis")
+
+      // Calcular o timestamp para o número de dias especificado
+      const startTime = Date.now() - days * 24 * 60 * 60 * 1000
+
+      // Buscar dados necessários para análise, limitando ao período especificado
+      const positions = await api.getPositions(connections)
+      const trades = await api.getTrades(connections, 50, startTime) // Buscar apenas os últimos 50 trades no período
+      const pnlData = await api.getPnLData(connections)
+
+      console.log("API: Data for behavior analysis:", {
+        positionsCount: positions.length,
+        tradesCount: trades.length,
+        pnlData: pnlData,
+        period: `${days} days (since ${new Date(startTime).toISOString()})}`,
+      })
+
+      // Definir limites de risco com base no perfil do usuário
+      // Estes valores podem ser obtidos do perfil do usuário ou configurações
+      const riskLimits = {
+        dailyLossLimit: 2.0, // 2% de perda diária máxima
+        weeklyLossLimit: 5.0, // 5% de perda semanal máxima
+        maxLeverage: 10, // Alavancagem máxima recomendada
+        maxDailyTrades: 20, // Número máximo de trades diários
+        recoveryTime: 24, // Tempo de recuperação em horas
+      }
+
+      // Executar as análises de comportamento
+      const behaviors = []
+
+      // 1. Detectar uso excessivo de alavancagem
+      const excessiveLeverageBehavior = detectExcessiveLeverage(trades, positions, riskLimits)
+      if (excessiveLeverageBehavior) {
+        console.log("API: Detected excessive leverage behavior:", excessiveLeverageBehavior)
+        behaviors.push(excessiveLeverageBehavior)
+      }
+
+      // 2. Detectar trading emocional
+      const emotionalTradingBehavior = detectEmotionalTrading(trades)
+      if (emotionalTradingBehavior) {
+        console.log("API: Detected emotional trading behavior:", emotionalTradingBehavior)
+        behaviors.push(emotionalTradingBehavior)
+      }
+
+      // 3. Detectar violação de limites de risco
+      const riskLimitViolationBehavior = detectRiskLimitViolation(
+        pnlData.dailyPnLPercentage,
+        pnlData.weeklyPnLPercentage,
+        riskLimits,
+      )
+      if (riskLimitViolationBehavior) {
+        console.log("API: Detected risk limit violation behavior:", riskLimitViolationBehavior)
+        behaviors.push(riskLimitViolationBehavior)
+      }
+
+      // 4. Detectar múltiplas operações com alta alavancagem
+      const multipleHighLeverageBehavior = detectMultipleHighLeveragePositions(positions, riskLimits)
+      if (multipleHighLeverageBehavior) {
+        console.log("API: Detected multiple high leverage positions behavior:", multipleHighLeverageBehavior)
+        behaviors.push(multipleHighLeverageBehavior)
+      }
+
+      console.log(`API: Behavior analysis complete. Found ${behaviors.length} behaviors.`)
+      return behaviors
+    } catch (error) {
+      console.error("API: Error analyzing behaviors:", error)
+      return []
+    }
+  },
+
   getPnLData: async (connections: any[]) => {
     console.log("API: Getting P&L data")
     console.log("API: Connections received:", connections)
@@ -1419,75 +1506,520 @@ export const api = {
       }
     }
   },
+  // Adicionando uma nova função otimizada para análise de comportamentos
+  // Esta função é uma versão mais leve da getBehaviors que evita múltiplas chamadas de API
 
-  connectExchange: async (exchange: string, apiKey: string, apiSecret: string, accountType: string) => {
-    console.log(`API: Connecting to ${exchange} ${accountType} with API key: ${apiKey.substring(0, 4)}...`)
+  // Nova função otimizada para análise de comportamentos
+  getLightBehaviors: async (connections: any[]) => {
+    console.log("API: Getting light behaviors analysis")
+    console.log("API: Connections received:", connections)
+
+    if (!connections || connections.length === 0) {
+      console.log("API: No connected exchanges, returning empty behaviors")
+      return []
+    }
 
     try {
-      // Validar os parâmetros
-      if (!exchange || !apiKey || !apiSecret || !accountType) {
-        return { success: false, message: "Parâmetros de conexão inválidos" }
-      }
+      // Importar as funções de análise de comportamento
+      const {
+        detectExcessiveLeverage,
+        detectEmotionalTrading,
+        detectRiskLimitViolation,
+        detectMultipleHighLeveragePositions,
+      } = await import("../services/behaviorAnalysis")
 
-      // Implementação específica para Binance
-      if (exchange.toLowerCase() === "binance") {
-        try {
-          // Testar a conexão fazendo uma chamada simples à API
-          const timestamp = Date.now()
-          let endpoint = ""
+      // Usar dados em cache ou pré-calculados quando possível
+      // Em vez de fazer múltiplas chamadas de API, fazemos apenas uma chamada
+      // para buscar todos os dados necessários de uma vez
+      const cachedData = await api.getCombinedTradingData(connections)
 
-          if (accountType === "futures") {
-            endpoint = "https://fapi.binance.com/fapi/v1/time"
-          } else {
-            endpoint = "https://api.binance.com/api/v3/time"
+      console.log("API: Using combined data for behavior analysis:", {
+        positionsCount: cachedData.positions.length,
+        tradesCount: cachedData.trades.length,
+        pnlData: cachedData.pnlData,
+      })
+
+      // Obter os limites de risco do store global
+      // Isso garante que usamos os mesmos limites definidos no gerenciamento de risco
+      let riskLimits
+      let selectedRiskLevel
+
+      try {
+        // Importar o store de forma segura
+        const { useStore } = await import("../store")
+        const storeState = useStore.getState()
+
+        // Verificar se conseguimos obter os limites de risco do store
+        if (storeState && storeState.riskLimits && storeState.selectedRiskLevel) {
+          riskLimits = storeState.riskLimits
+          selectedRiskLevel = storeState.selectedRiskLevel
+          console.log(`API: Using risk limits for ${selectedRiskLevel} level:`, riskLimits)
+        } else {
+          // Fallback para valores padrão se não conseguirmos obter do store
+          console.log("API: Could not get risk limits from store, using default values")
+          riskLimits = {
+            dailyLossLimit: 5.0, // Valor moderado como padrão
+            weeklyLossLimit: 15.0, // Valor moderado como padrão
+            maxLeverage: 10,
+            maxDailyTrades: 20,
+            recoveryTime: 12,
           }
-
-          // Criar a string para assinatura
-          const queryString = `timestamp=${timestamp}`
-          const signature = await createHmacSignature(queryString, apiSecret)
-
-          // URL completa
-          const url = `${endpoint}?${queryString}&signature=${signature}`
-
-          // Fazer a requisição
-          const response = await fetch(url, {
-            method: "GET",
-            headers: {
-              "X-MBX-APIKEY": apiKey,
-            },
-          })
-
-          if (!response.ok) {
-            const errorText = await response.text()
-            console.error(`API: Binance connection test failed: ${response.status}`, errorText)
-            return { success: false, message: `Falha na conexão: ${response.status} - ${errorText}` }
-          }
-
-          // Se chegou aqui, a conexão foi bem-sucedida
-          console.log("API: Binance connection test successful")
-          return { success: true, message: "Conexão estabelecida com sucesso" }
-        } catch (error) {
-          console.error("API: Error testing Binance connection:", error)
-          return {
-            success: false,
-            message: `Erro ao testar conexão: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
-          }
+          selectedRiskLevel = "Moderate"
         }
-      } else {
-        // Outras corretoras
-        console.log(`API: Exchange ${exchange} not fully supported, using mock connection`)
-        return { success: true, message: "Conexão simulada estabelecida com sucesso" }
+      } catch (storeError) {
+        console.error("API: Error accessing store, using default risk limits:", storeError)
+        // Fallback para valores padrão em caso de erro
+        riskLimits = {
+          dailyLossLimit: 5.0,
+          weeklyLossLimit: 15.0,
+          maxLeverage: 10,
+          maxDailyTrades: 20,
+          recoveryTime: 12,
+        }
+        selectedRiskLevel = "Moderate"
       }
+
+      // Executar as análises de comportamento
+      const behaviors = []
+
+      // 1. Detectar uso excessivo de alavancagem
+      const excessiveLeverageBehavior = detectExcessiveLeverage(cachedData.trades, cachedData.positions, riskLimits)
+      if (excessiveLeverageBehavior) {
+        behaviors.push(excessiveLeverageBehavior)
+      }
+
+      // 2. Detectar trading emocional
+      const emotionalTradingBehavior = detectEmotionalTrading(cachedData.trades)
+      if (emotionalTradingBehavior) {
+        behaviors.push(emotionalTradingBehavior)
+      }
+
+      // 3. Detectar violação de limites de risco
+      const riskLimitViolationBehavior = detectRiskLimitViolation(
+        cachedData.pnlData.dailyPnLPercentage,
+        cachedData.pnlData.weeklyPnLPercentage,
+        riskLimits,
+      )
+      if (riskLimitViolationBehavior) {
+        behaviors.push(riskLimitViolationBehavior)
+      }
+
+      // 4. Detectar múltiplas operações com alta alavancagem
+      const multipleHighLeverageBehavior = detectMultipleHighLeveragePositions(cachedData.positions, riskLimits)
+      if (multipleHighLeverageBehavior) {
+        behaviors.push(multipleHighLeverageBehavior)
+      }
+
+      // Adicionar comportamentos simulados para garantir que sempre temos algo para mostrar
+      // durante o desenvolvimento e testes
+      if (behaviors.length === 0 && process.env.NODE_ENV !== "production") {
+        console.log("API: No behaviors detected, adding sample behaviors for development")
+        behaviors.push({
+          id: `sample-behavior-${Date.now()}`,
+          type: "Uso Excessivo de Alavancagem",
+          description:
+            "Você está utilizando alavancagem acima do recomendado para seu perfil de risco. Limite: 10x, Utilizado: 15.5x.",
+          severity: "medium",
+          recommendation: "Considere reduzir sua alavancagem para no máximo 10x para seu nível de risco atual.",
+          timestamp: Date.now(),
+        })
+      }
+
+      console.log(`API: Light behavior analysis complete. Found ${behaviors.length} behaviors.`)
+      return behaviors
     } catch (error) {
-      console.error("API: Error in connectExchange:", error)
-      return {
-        success: false,
-        message: `Erro interno: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
-      }
+      console.error("API: Error analyzing behaviors:", error)
+      return []
     }
   },
 
+  // Nova função para buscar todos os dados de uma vez
+  getCombinedTradingData: async (connections: any[]) => {
+    console.log("API: Getting combined trading data")
+
+    // Verificar se temos dados em cache
+    if (api._cachedTradingData && Date.now() - api._cachedTradingData.timestamp < 15 * 60 * 1000) {
+      console.log("API: Using cached trading data")
+      return api._cachedTradingData.data
+    }
+
+    // Buscar apenas os dados essenciais
+    // Limitar a quantidade de trades para melhorar performance
+    const positions = await api.getPositions(connections)
+
+    // Buscar trades dos últimos 7 dias
+    const recentTime = Date.now() - 7 * 24 * 60 * 60 * 1000
+    const trades = await api.getTrades(connections, 50, recentTime) // Aumentado para 50 trades
+
+    const pnlData = await api.getPnLData(connections)
+
+    // Armazenar em cache
+    api._cachedTradingData = {
+      timestamp: Date.now(),
+      data: { positions, trades, pnlData },
+    }
+
+    return { positions, trades, pnlData }
+  },
+
+  // Variável para armazenar cache
+  _cachedTradingData: null,
+  // Adicionar uma nova função para verificar uma posição específica contra os limites de risco
+  // Esta função deve ser adicionada ao objeto api, após a função getLightBehaviors
+
+  // Nova função para verificar uma posição específica contra os limites de risco
+  checkPositionRiskLimits: async (position: Position, riskLimits: RiskLimits) => {
+    console.log("API: Checking position against risk limits:", position)
+
+    const violations = []
+
+    // Verificar alavancagem
+    if (position.leverage > riskLimits.maxLeverage) {
+      violations.push({
+        type: "leverage",
+        actual: position.leverage,
+        limit: riskLimits.maxLeverage,
+        message: `Alavancagem de ${position.leverage}x excede o limite de ${riskLimits.maxLeverage}x para seu perfil de risco.`,
+      })
+    }
+
+    // Verificar tamanho da posição (como % do capital)
+    // Primeiro precisamos obter o saldo total
+    const lastBalance = api.getLastProcessedBalance()
+    if (lastBalance && lastBalance.total > 0) {
+      const positionValue = position.size * position.entryPrice
+      const positionSizePercent = (positionValue / lastBalance.total) * 100
+
+      // Definir um limite de tamanho baseado no nível de risco
+      // Conservador: 20%, Moderado: 40%, Agressivo: 60%
+      let sizeLimit = 40 // Valor padrão moderado
+      if (riskLimits.maxLeverage <= 5) sizeLimit = 20 // Conservador
+      if (riskLimits.maxLeverage >= 15) sizeLimit = 60 // Agressivo
+
+      if (positionSizePercent > sizeLimit) {
+        violations.push({
+          type: "size",
+          actual: positionSizePercent.toFixed(2),
+          limit: sizeLimit,
+          message: `Tamanho da posição (${positionSizePercent.toFixed(2)}% do capital) excede o limite recomendado de ${sizeLimit}%.`,
+        })
+      }
+    }
+
+    return violations
+  },
+
+  // Nova função para monitorar posições em tempo real
+  monitorPositionsRealTime: async (connections: any[], callback: Function) => {
+    console.log("API: Starting real-time position monitoring")
+
+    if (!connections || connections.length === 0) {
+      console.log("API: No connections available for monitoring")
+      return false
+    }
+
+    try {
+      // Importar o store para obter os limites de risco atuais
+      const { useStore } = await import("../store")
+      const { riskLimits } = useStore.getState()
+
+      // Armazenar IDs de posições já processadas para evitar notificações duplicadas
+      const processedPositionIds = new Set()
+
+      // Função para verificar novas posições
+      const checkNewPositions = async () => {
+        try {
+          // Obter posições atuais
+          const currentPositions = await api.getPositions(connections)
+
+          // Verificar cada posição
+          for (const position of currentPositions) {
+            // Verificar se já processamos esta posição
+            if (!processedPositionIds.has(position.id)) {
+              console.log("API: New position detected:", position)
+
+              // Verificar limites de risco
+              const violations = await api.checkPositionRiskLimits(position, riskLimits)
+
+              // Se houver violações, notificar via callback
+              if (violations.length > 0) {
+                callback({
+                  position,
+                  violations,
+                  timestamp: Date.now(),
+                })
+              }
+
+              // Marcar como processada
+              processedPositionIds.add(position.id)
+            }
+          }
+        } catch (error) {
+          console.error("API: Error checking new positions:", error)
+        }
+      }
+
+      // Verificar imediatamente
+      await checkNewPositions()
+
+      // Configurar intervalo para verificação periódica (a cada 30 segundos)
+      const intervalId = setInterval(checkNewPositions, 30000)
+
+      // Retornar função para parar o monitoramento
+      return () => {
+        console.log("API: Stopping real-time position monitoring")
+        clearInterval(intervalId)
+      }
+    } catch (error) {
+      console.error("API: Error setting up position monitoring:", error)
+      return false
+    }
+  },
+  connectExchange: async () => {
+    console.log("API: connectExchange function called")
+    return true
+  },
   _cachedTradingData: null,
   _cacheTimestamps,
   _activeWebSockets,
+  // Corrigir a função connectExchange para retornar um resultado válido
+}
+
+api.connectExchange = async (exchange: string, apiKey: string, apiSecret: string, accountType: string) => {
+  console.log(`API: Connecting to ${exchange} ${accountType} with API key: ${apiKey.substring(0, 4)}...`)
+
+  try {
+    // Validar os parâmetros
+    if (!exchange || !apiKey || !apiSecret || !accountType) {
+      return { success: false, message: "Parâmetros de conexão inválidos" }
+    }
+
+    // Implementação específica para Binance
+    if (exchange.toLowerCase() === "binance") {
+      try {
+        // Testar a conexão fazendo uma chamada simples à API
+        const timestamp = Date.now()
+        let endpoint = ""
+
+        if (accountType === "futures") {
+          endpoint = "https://fapi.binance.com/fapi/v1/time"
+        } else {
+          endpoint = "https://api.binance.com/api/v3/time"
+        }
+
+        // Criar a string para assinatura
+        const queryString = `timestamp=${timestamp}`
+        const signature = await createHmacSignature(queryString, apiSecret)
+
+        // URL completa
+        const url = `${endpoint}?${queryString}&signature=${signature}`
+
+        // Fazer a requisição
+        const response = await fetch(url, {
+          method: "GET",
+          headers: {
+            "X-MBX-APIKEY": apiKey,
+          },
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error(`API: Binance connection test failed: ${response.status}`, errorText)
+          return { success: false, message: `Falha na conexão: ${response.status} - ${errorText}` }
+        }
+
+        // Se chegou aqui, a conexão foi bem-sucedida
+        console.log("API: Binance connection test successful")
+        return { success: true, message: "Conexão estabelecida com sucesso" }
+      } catch (error) {
+        console.error("API: Error testing Binance connection:", error)
+        return {
+          success: false,
+          message: `Erro ao testar conexão: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
+        }
+      }
+    } else {
+      // Outras corretoras
+      console.log(`API: Exchange ${exchange} not fully supported, using mock connection`)
+      return { success: true, message: "Conexão simulada estabelecida com sucesso" }
+    }
+  } catch (error) {
+    console.error("API: Error in connectExchange:", error)
+    return {
+      success: false,
+      message: `Erro interno: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
+    }
+  }
+}
+
+// Modificar a função getPnLData para considerar movimentações de capital
+const getPnLData = async (connections: any[]): Promise<any> => {
+  console.log("API: Getting P&L data with capital movement adjustments")
+
+  // Código existente para obter dados brutos de PnL...
+
+  try {
+    // Obter dados de PnL da API da corretora...
+
+    // Calcular timestamps
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+
+    // Obter movimentações de capital nos períodos relevantes
+    const { getCapitalMovementTotals } = await import("../services/capitalMovementService")
+
+    const dailyMovements = await getCapitalMovementTotals(new Date(oneDayAgo))
+    const weeklyMovements = await getCapitalMovementTotals(new Date(sevenDaysAgo))
+
+    // Obter saldo total para calcular percentuais
+    const balanceData = await api.getAccountBalance(connections, accountType)
+    const totalBalance = balanceData.total
+
+    // Endpoint para income (inclui PnL realizado)
+    const incomeEndpoint = "https://fapi.binance.com/fapi/v1/income"
+
+    // Buscar PnL diário (últimas 24h)
+    const timestamp = Date.now()
+    const dailyQueryString = addBinanceCommonParams(
+      `timestamp=${timestamp}&incomeType=REALIZED_PNL&startTime=${oneDayAgo}`,
+    )
+    const dailySignature = await createHmacSignature(dailyQueryString, apiSecret)
+    const dailyUrl = `${incomeEndpoint}?${dailyQueryString}&signature=${dailySignature}`
+
+    console.log(`API: Sending request for daily P&L: ${dailyUrl}`)
+
+    const dailyResponse = await rateLimitedRequest(dailyUrl, {
+      headers: { "X-MBX-APIKEY": apiKey },
+    })
+
+    // Buscar PnL semanal (últimos 7 dias)
+    const weeklyQueryString = addBinanceCommonParams(
+      `timestamp=${timestamp}&incomeType=REALIZED_PNL&startTime=${sevenDaysAgo}`,
+    )
+    const weeklySignature = await createHmacSignature(weeklyQueryString, apiSecret)
+    const weeklyUrl = `${incomeEndpoint}?${weeklyQueryString}&signature=${weeklySignature}`
+
+    console.log(`API: Sending request for weekly P&L: ${weeklyUrl}`)
+
+    const weeklyResponse = await rateLimitedRequest(weeklyUrl, {
+      headers: { "X-MBX-APIKEY": apiKey },
+    })
+
+    // Buscar histórico de trades para calcular alavancagem máxima e número de trades
+    const tradesEndpoint = "https://fapi.binance.com/fapi/v1/userTrades"
+    const tradesQueryString = addBinanceCommonParams(`timestamp=${timestamp}&limit=100&startTime=${oneDayAgo}`)
+    const tradesSignature = await createHmacSignature(tradesQueryString, apiSecret)
+    const tradesUrl = `${tradesEndpoint}?${tradesQueryString}&signature=${tradesSignature}`
+
+    console.log(`API: Sending request for trades history: ${tradesUrl}`)
+
+    const tradesResponse = await rateLimitedRequest(tradesUrl, {
+      headers: { "X-MBX-APIKEY": apiKey },
+    })
+
+    // Verificar se todas as requisições foram bem-sucedidas
+    let dailyData = []
+    let weeklyData = []
+    let tradesData = []
+
+    if (dailyResponse.ok) {
+      dailyData = await dailyResponse.json()
+      console.log("API: Received daily P&L data:", dailyData)
+    } else {
+      console.error(`API: Failed to fetch daily P&L data: ${dailyResponse.status}`)
+    }
+
+    if (weeklyResponse.ok) {
+      weeklyData = await weeklyResponse.json()
+      console.log("API: Received weekly P&L data:", weeklyData)
+    } else {
+      console.error(`API: Failed to fetch weekly P&L data: ${weeklyResponse.status}`)
+    }
+
+    if (tradesResponse.ok) {
+      tradesData = await tradesResponse.json()
+      console.log("API: Received trades data:", tradesData)
+    } else {
+      console.error(`API: Failed to fetch trades data: ${tradesResponse.status}`)
+    }
+
+    // Calcular P&L total
+    const dailyPnL = dailyData.reduce((sum: number, item: any) => sum + Number.parseFloat(item.income), 0)
+    const weeklyPnL = weeklyData.reduce((sum: number, item: any) => sum + Number.parseFloat(item.income), 0)
+
+    // Ajustar o saldo base considerando as movimentações de capital
+    const adjustedDailyBalance = totalBalance + dailyMovements.withdrawals - dailyMovements.deposits
+    const adjustedWeeklyBalance = totalBalance + weeklyMovements.withdrawals - weeklyMovements.deposits
+
+    // Usar Math.max com um valor pequeno para evitar divisão por zero
+    const safeDailyBalance = Math.max(adjustedDailyBalance, 0.0001)
+    const safeWeeklyBalance = Math.max(adjustedWeeklyBalance, 0.0001)
+
+    // Calcular percentuais ajustados
+    const dailyPnLPercentage = (dailyPnL / safeDailyBalance) * 100
+    const weeklyPnLPercentage = (weeklyPnL / safeWeeklyBalance) * 100
+
+    // Calcular alavancagem máxima e número de trades
+    let highestLeverage = 0
+    const uniqueOrderIds = new Set()
+
+    if (Array.isArray(tradesData)) {
+      tradesData.forEach((trade: any) => {
+        // Contar trades únicos (por orderId)
+        uniqueOrderIds.add(trade.orderId)
+
+        // Verificar alavancagem se disponível
+        if (trade.leverage) {
+          const leverage = Number.parseFloat(trade.leverage)
+          if (leverage > highestLeverage) {
+            highestLeverage = leverage
+          }
+        }
+      })
+    }
+
+    const dailyTrades = uniqueOrderIds.size
+
+    console.log("API: Calculated adjusted P&L metrics:", {
+      dailyPnL,
+      dailyPnLPercentage,
+      adjustedDailyBalance,
+      weeklyPnL,
+      weeklyPnLPercentage,
+      adjustedWeeklyBalance,
+      dailyMovements,
+      weeklyMovements,
+      highestLeverage,
+      dailyTrades,
+    })
+
+    return {
+      dailyPnL,
+      dailyPnLPercentage,
+      weeklyPnL,
+      weeklyPnLPercentage,
+      highestLeverage,
+      dailyTrades,
+      // Adicionar informações sobre os ajustes
+      capitalMovements: {
+        daily: dailyMovements,
+        weekly: weeklyMovements,
+      },
+    }
+  } catch (error) {
+    console.error("API: Error calculating adjusted P&L:", error)
+    // Retornar valores padrão em caso de erro
+    return {
+      dailyPnL: 0,
+      dailyPnLPercentage: 0,
+      weeklyPnL: 0,
+      weeklyPnLPercentage: 0,
+      highestLeverage: 0,
+      dailyTrades: 0,
+      capitalMovements: {
+        daily: { deposits: 0, withdrawals: 0 },
+        weekly: { deposits: 0, withdrawals: 0 },
+      },
+    }
+  }
 }
