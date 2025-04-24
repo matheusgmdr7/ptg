@@ -11,7 +11,15 @@ import { toast } from "react-toastify"
 import { Wallet, Key, KeyRound, RefreshCw, CheckCircle, AlertTriangle } from "lucide-react"
 
 const ExchangeConnector: React.FC = () => {
-  const { connections, addConnection, removeConnection, setBalance } = useAppStore()
+  const {
+    connections,
+    addConnection,
+    removeConnection,
+    setBalance,
+    updatePositions,
+    updateRiskStatus,
+    updateBehaviors,
+  } = useAppStore()
   const { t } = useTranslation()
   const selectedExchange: Exchange = "Binance"
   const [apiKey, setApiKey] = useState("")
@@ -23,6 +31,7 @@ const ExchangeConnector: React.FC = () => {
 
   const exchanges: Exchange[] = ["Binance"]
 
+  // Modificar o useEffect para carregar apenas dados essenciais inicialmente
   useEffect(() => {
     const loadConnections = async () => {
       try {
@@ -33,7 +42,11 @@ const ExchangeConnector: React.FC = () => {
         })
 
         if (connections.length > 0) {
-          await api.checkRealConnections(connections)
+          // Carregar apenas dados essenciais inicialmente
+          await loadEssentialData(connections)
+
+          // Carregar dados detalhados após um pequeno delay
+          setTimeout(() => loadDetailedData(connections), 1000)
         }
       } catch (error) {
         console.error("Error loading exchange connections:", error)
@@ -46,7 +59,69 @@ const ExchangeConnector: React.FC = () => {
     loadConnections()
   }, [addConnection])
 
-  // Modifique a função handleConnect para garantir que os dados sejam atualizados após conectar uma corretora
+  // Adicionar estas novas funções após o useEffect
+  // Função para carregar apenas dados essenciais
+  const loadEssentialData = async (connections) => {
+    try {
+      console.log("ExchangeConnector: Loading essential data...")
+      // Carregar apenas saldo disponível e risco diário
+      const balanceData = await api.getAccountBalance(connections, "futures", true) // true = apenas dados essenciais
+      setBalance(balanceData)
+
+      // Carregar posições abertas sem detalhes completos
+      const positions = await api.getPositions(connections, true) // true = apenas dados essenciais
+      // Atualizar o estado global com as posições
+      if (updatePositions) {
+        updatePositions(positions)
+      }
+    } catch (error) {
+      console.error("ExchangeConnector: Error loading essential data:", error)
+    }
+  }
+
+  // Função para carregar dados detalhados em segundo plano
+  const loadDetailedData = async (connections) => {
+    try {
+      console.log("ExchangeConnector: Loading detailed data...")
+      // Carregar dados completos de saldo
+      const detailedBalance = await api.getAccountBalance(connections, accountType)
+      setBalance(detailedBalance)
+
+      // Carregar posições com todos os detalhes
+      const detailedPositions = await api.getPositions(connections)
+      if (updatePositions) {
+        updatePositions(detailedPositions)
+      }
+
+      // Iniciar WebSocket para atualizações em tempo real se disponível
+      api.startWebSocketUpdates(connections, (data) => {
+        if (data.type === "balance") {
+          setBalance(data.balance)
+        } else if (data.type === "positions") {
+          if (updatePositions) {
+            updatePositions(data.positions)
+          }
+        }
+      })
+
+      // Carregar dados de risco e comportamentos em segundo plano
+      api.getRiskStatus(connections).then((riskStatus) => {
+        if (updateRiskStatus) {
+          updateRiskStatus(riskStatus)
+        }
+      })
+
+      api.getLightBehaviors(connections).then((behaviors) => {
+        if (updateBehaviors) {
+          updateBehaviors(behaviors)
+        }
+      })
+    } catch (error) {
+      console.error("ExchangeConnector: Error loading detailed data:", error)
+    }
+  }
+
+  // Modificar a função handleConnect para usar a nova abordagem
   const handleConnect = async () => {
     if (!apiKey || !apiSecret) {
       setError("API Key e Secret são obrigatórios")
@@ -99,15 +174,16 @@ const ExchangeConnector: React.FC = () => {
         console.log("ExchangeConnector: Updating hasConnectedExchanges flag")
         await api.checkRealConnections(updatedConnections)
 
-        // Fetch balance immediately to update the dashboard
-        console.log("ExchangeConnector: Fetching initial balance")
+        // Fetch essential data immediately
+        console.log("ExchangeConnector: Fetching initial essential data")
         try {
-          const balanceData = await api.getAccountBalance(updatedConnections, accountType)
-          console.log("ExchangeConnector: Initial balance fetched:", balanceData)
-          setBalance(balanceData)
+          await loadEssentialData([newConnection])
+
+          // Carregar dados detalhados após um pequeno delay
+          setTimeout(() => loadDetailedData([newConnection]), 1000)
         } catch (balanceError) {
-          console.error("ExchangeConnector: Error fetching initial balance:", balanceError)
-          toast.warning("Conexão estabelecida, mas houve um erro ao buscar o saldo inicial")
+          console.error("ExchangeConnector: Error fetching initial data:", balanceError)
+          toast.warning("Conexão estabelecida, mas houve um erro ao buscar os dados iniciais")
         }
 
         toast.success(`Conectado à ${selectedExchange} ${accountType === "futures" ? "Futuros" : "Spot"} com sucesso!`)
@@ -293,4 +369,3 @@ const ExchangeConnector: React.FC = () => {
 }
 
 export default ExchangeConnector
-
