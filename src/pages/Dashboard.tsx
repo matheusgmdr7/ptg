@@ -6,19 +6,12 @@ import { useAppStore } from "../store"
 import { api } from "../services/api"
 import { useTranslation } from "react-i18next"
 import { format, subDays } from "date-fns"
-import {
-  ArrowUpRight,
-  ArrowDownRight,
-  RefreshCw,
-  AlertTriangle,
-  Wallet,
-  LineChart,
-  ArrowRight,
-  History,
-} from "lucide-react"
+import { ArrowUpRight, ArrowDownRight, RefreshCw, AlertTriangle, Wallet, LineChart, ArrowRight, History } from 'lucide-react'
 import { Link } from "react-router-dom"
 import { toast } from "react-toastify"
 import RiskStatusCard from "../components/RiskStatusCard"
+import CapitalMovementButton from "../components/CapitalMovementButton"
+import UnreportedMovementAlert from "../components/UnreportedMovementAlert"
 
 const Dashboard: React.FC = () => {
   const { balance, positions, trades, connections, setBalance, setPositions, setTrades } = useAppStore()
@@ -231,6 +224,9 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* Alerta de movimentação não informada */}
+      <UnreportedMovementAlert />
+
       {error && (
         <div className="bg-red-900/30 border border-red-800 rounded-lg p-4 flex items-start">
           <AlertTriangle className="text-red-400 mr-3 flex-shrink-0 mt-0.5" size={20} />
@@ -247,11 +243,14 @@ const Dashboard: React.FC = () => {
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_70%)]"></div>
         <div className="p-5 border-b border-violet-900/20 flex justify-between items-center relative z-10">
           <h2 className="text-xl font-semibold text-gray-200">Saldo</h2>
-          <div className="text-xs text-gray-400 flex items-center">
-            <span className="mr-2">Tipo de conta:</span>
-            <span className="px-2 py-0.5 bg-violet-900/30 text-violet-400 rounded-full">
-              {displayBalance?.accountType === "futures" ? "Futuros" : "Spot"}
-            </span>
+          <div className="flex items-center gap-3">
+            <CapitalMovementButton onSuccess={fetchData} />
+            <div className="text-xs text-gray-400 flex items-center">
+              <span className="mr-2">Tipo de conta:</span>
+              <span className="px-2 py-0.5 bg-violet-900/30 text-violet-400 rounded-full">
+                {displayBalance?.accountType === "futures" ? "Futuros" : "Spot"}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -493,6 +492,35 @@ const Dashboard: React.FC = () => {
         )}
       </div>
 
+      {/* Capital Movement History Section */}
+      <div className="bg-gradient-to-br from-black to-violet-950/20 rounded-xl border border-violet-700/30 shadow-lg overflow-hidden relative">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_70%)]"></div>
+        <div className="p-5 border-b border-violet-900/20 flex justify-between items-center relative z-10">
+          <h2 className="text-xl font-semibold text-gray-200">Movimentações de Capital</h2>
+          <CapitalMovementButton onSuccess={fetchData} />
+        </div>
+        <div className="p-6 relative z-10">
+          <div className="mb-4 p-3 bg-violet-900/20 border border-violet-700/30 rounded-lg">
+            <p className="text-sm text-gray-300">
+              <strong>Dica:</strong> Registre suas movimentações de capital para manter suas métricas de risco precis  Registre suas movimentações de capital para manter suas métricas de risco precisas e evitar distorções nos cálculos de PnL.
+            </p>
+          </div>
+          <div className="space-y-4">
+            {/* Histórico de Movimentações */}
+            <div className="space-y-2">
+              <h3 className="text-sm font-medium text-gray-300 mb-2">Últimas Movimentações</h3>
+              <div className="border-t border-violet-900/20 pt-2">
+                <div className="max-h-64 overflow-y-auto pr-1">
+                  <div className="space-y-2">
+                    <CapitalMovementHistory />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Weekly Performance Section */}
       <div className="bg-gradient-to-br from-black to-violet-950/20 rounded-xl border border-violet-700/30 shadow-lg overflow-hidden relative">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_70%)]"></div>
@@ -579,4 +607,3 @@ const Dashboard: React.FC = () => {
 }
 
 export default Dashboard
-
