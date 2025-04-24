@@ -15,6 +15,8 @@ import {
   LineChart,
   ArrowRight,
   History,
+  ArrowUpCircle,
+  ArrowDownCircle,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { toast } from "react-toastify"
@@ -33,6 +35,8 @@ const Dashboard: React.FC = () => {
   const [lastRefreshTime, setLastRefreshTime] = useState<string>("")
   const [error, setError] = useState<string | null>(null)
   const [updateCount, setUpdateCount] = useState(0)
+  const [capitalMovements, setCapitalMovements] = useState<any[]>([])
+  const [isLoadingMovements, setIsLoadingMovements] = useState(false)
 
   // Fetch data from API
   const fetchData = async (isAutoUpdate = false) => {
@@ -100,6 +104,15 @@ const Dashboard: React.FC = () => {
           console.error("Dashboard: Erro ao atualizar status de risco:", riskError)
         }
 
+        // Verificar movimentações de capital da Binance
+        try {
+          console.log("Dashboard: Verificando movimentações de capital da Binance")
+          const { checkBinanceCapitalMovements } = await import("../services/capitalMovementService")
+          await checkBinanceCapitalMovements(connections)
+        } catch (movementError) {
+          console.error("Dashboard: Erro ao verificar movimentações de capital:", movementError)
+        }
+
         setLastRefreshTime(new Date().toLocaleTimeString())
         setUpdateCount((prev) => prev + 1)
       } else {
@@ -129,12 +142,27 @@ const Dashboard: React.FC = () => {
     }
   }
 
+  // Carregar movimentações de capital
+  const fetchCapitalMovements = async () => {
+    try {
+      setIsLoadingMovements(true)
+      const { getCapitalMovements } = await import("../services/capitalMovementService")
+      const movements = await getCapitalMovements(10) // Últimas 10 movimentações
+      setCapitalMovements(movements)
+    } catch (error) {
+      console.error("Dashboard: Erro ao carregar movimentações de capital:", error)
+    } finally {
+      setIsLoadingMovements(false)
+    }
+  }
+
   // Efeito para carregar dados iniciais
   useEffect(() => {
     const loadInitialData = async () => {
       try {
         console.log("Dashboard: Carregando dados iniciais")
         await fetchData()
+        await fetchCapitalMovements()
 
         // Verificar se temos conexões
         if (!connections || connections.length === 0) {
@@ -315,6 +343,7 @@ const Dashboard: React.FC = () => {
                 const positionsData = await api.getPositions(connections, false, true)
                 console.log("Dashboard: Posições recebidas:", positionsData)
                 setPositions(positionsData)
+                await fetchCapitalMovements() // Atualizar movimentações de capital
                 toast.success("Dados atualizados com sucesso")
               } catch (error) {
                 console.error("Dashboard: Erro ao atualizar dados:", error)
@@ -361,7 +390,12 @@ const Dashboard: React.FC = () => {
         <div className="p-5 border-b border-violet-900/20 flex justify-between items-center relative z-10">
           <h2 className="text-xl font-semibold text-gray-200">Saldo</h2>
           <div className="flex items-center gap-3">
-            <CapitalMovementButton onSuccess={fetchData} />
+            <CapitalMovementButton
+              onSuccess={() => {
+                fetchData(false)
+                fetchCapitalMovements()
+              }}
+            />
             <div className="text-xs text-gray-400 flex items-center">
               <span className="mr-2">Tipo de conta:</span>
               <span className="px-2 py-0.5 bg-violet-900/30 text-violet-400 rounded-full">
@@ -614,7 +648,12 @@ const Dashboard: React.FC = () => {
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_70%)]"></div>
         <div className="p-5 border-b border-violet-900/20 flex justify-between items-center relative z-10">
           <h2 className="text-xl font-semibold text-gray-200">Movimentações de Capital</h2>
-          <CapitalMovementButton onSuccess={fetchData} />
+          <CapitalMovementButton
+            onSuccess={() => {
+              fetchData(false)
+              fetchCapitalMovements()
+            }}
+          />
         </div>
         <div className="p-6 relative z-10">
           <div className="mb-4 p-3 bg-violet-900/20 border border-violet-700/30 rounded-lg">
@@ -630,7 +669,50 @@ const Dashboard: React.FC = () => {
               <div className="border-t border-violet-900/20 pt-2">
                 <div className="max-h-64 overflow-y-auto pr-1">
                   <div className="space-y-2">
-                    <CapitalMovementHistory />
+                    {isLoadingMovements ? (
+                      <div className="animate-pulse space-y-2">
+                        <div className="h-12 bg-violet-900/20 rounded"></div>
+                        <div className="h-12 bg-violet-900/20 rounded"></div>
+                        <div className="h-12 bg-violet-900/20 rounded"></div>
+                      </div>
+                    ) : (
+                      <CapitalMovementHistory />
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Resumo de Movimentações Automáticas */}
+            <div className="mt-6 pt-4 border-t border-violet-900/20">
+              <h3 className="text-sm font-medium text-gray-300 mb-3">Movimentações Automáticas</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-violet-900/20 rounded-lg p-4 border border-violet-700/30">
+                  <div className="flex items-center">
+                    <div className="w-10 h-10 rounded-full bg-violet-900/40 flex items-center justify-center mr-3">
+                      <ArrowUpCircle className="text-violet-400" size={20} />
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-400">Depósitos Detectados</div>
+                      <div className="text-lg font-medium text-gray-200">
+                        {capitalMovements?.filter((m) => m.type === "deposit" && m.source === "binance")?.length || 0}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-violet-900/20 rounded-lg p-4 border border-violet-700/30">
+                  <div className="flex items-center">
+                    <div className="w-10 h-10 rounded-full bg-red-900/40 flex items-center justify-center mr-3">
+                      <ArrowDownCircle className="text-red-400" size={20} />
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-400">Saques Detectados</div>
+                      <div className="text-lg font-medium text-gray-200">
+                        {capitalMovements?.filter((m) => m.type === "withdrawal" && m.source === "binance")?.length ||
+                          0}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
