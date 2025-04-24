@@ -1,5 +1,3 @@
-// Adicionando as novas funções para buscar depósitos e saques da Binance
-
 // Delay function for simulating API latency
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms))
 
@@ -183,6 +181,29 @@ let _cachedTradingData = {
     deposits: [],
     withdrawals: [],
   },
+}
+
+// Declarar a variável api para uso em funções internas
+const api: any = {}
+
+// Remover delays artificiais da função rateLimitedRequest
+async function rateLimitedRequest(url: string, options: RequestInit): Promise<Response> {
+  const now = Date.now()
+  const timeSinceLastRequest = now - lastRequestTime
+
+  if (timeSinceLastRequest < minRequestInterval) {
+    // Reduzir o delay para o mínimo necessário
+    await new Promise((resolve) => setTimeout(resolve, minRequestInterval - timeSinceLastRequest))
+  }
+
+  lastRequestTime = Date.now()
+
+  try {
+    return await fetch(url, options)
+  } catch (error) {
+    console.error("API: Error in rateLimitedRequest:", error)
+    throw error
+  }
 }
 
 // Modificar a função getAccountBalance para suportar carregamento essencial
@@ -601,6 +622,212 @@ const getPositions = async (connections: any[], essentialOnly = false, skipCache
   }
 }
 
+// Função para buscar histórico de trades
+const getTrades = async (connections: any[], limit = 100, startTime?: number) => {
+  console.log(`API: Getting trades history (limit: ${limit}, startTime: ${startTime})`)
+  console.log("API: Connections received:", connections)
+
+  if (!connections || connections.length === 0) {
+    console.log("API: No connected exchanges, returning empty trades")
+    return []
+  }
+
+  try {
+    // Obter a primeira conexão disponível
+    const connection = connections[0]
+    const exchange = connection.exchange.toLowerCase()
+    const apiKey = connection.apiKey
+    const apiSecret = connection.apiSecret
+    const accountType = connection.accountType || "futures"
+
+    console.log(`API: Fetching trade history from ${exchange} exchange with account type ${accountType}`)
+
+    // Tentar buscar dados reais da API da corretora
+    if (exchange === "binance") {
+      // Implementação para Binance
+      if (accountType === "futures") {
+        try {
+          // Implementação para Binance Futures
+          const timestamp = Date.now()
+
+          // Usar o startTime fornecido ou um padrão (30 dias atrás)
+          const defaultStartTime = Date.now() - 30 * 24 * 60 * 60 * 1000 // 30 dias atrás
+          const actualStartTime = startTime || defaultStartTime
+          const endTime = Date.now()
+
+          console.log(
+            `API: Fetching trade history from ${new Date(actualStartTime).toISOString()} to ${new Date(endTime).toISOString()}`,
+          )
+
+          // Dividir o intervalo de tempo em chunks menores para evitar problemas com períodos longos
+          const timeChunks = splitTimeRange(actualStartTime, endTime)
+          console.log(`API: Split time range into ${timeChunks.length} chunks`)
+
+          // Arrays para armazenar os resultados de cada endpoint
+          let allOrders = []
+          let allTrades = []
+          const allIncome = []
+
+          // Buscar dados para cada chunk de tempo
+          for (const [index, chunk] of timeChunks.entries()) {
+            try {
+              console.log(
+                `API: Processing chunk ${index + 1}/${timeChunks.length}: ${new Date(chunk.start).toISOString()} to ${new Date(chunk.end).toISOString()}`,
+              )
+
+              // 1. Buscar histórico de ordens
+              const ordersEndpoint = "https://fapi.binance.com/fapi/v1/allOrders"
+              const ordersQueryString = addBinanceCommonParams(
+                `timestamp=${timestamp}&limit=500&startTime=${chunk.start}&endTime=${chunk.end}`,
+              )
+              const ordersSignature = await createHmacSignature(ordersQueryString, apiSecret)
+              const ordersUrl = `${ordersEndpoint}?${ordersQueryString}&signature=${ordersSignature}`
+
+              console.log(`API: Sending request to Binance for order history (chunk ${index + 1})`)
+
+              const ordersResponse = await rateLimitedRequest(ordersUrl, {
+                method: "GET",
+                headers: {
+                  "X-MBX-APIKEY": apiKey,
+                },
+              })
+
+              if (ordersResponse.ok) {
+                const chunkOrders = await ordersResponse.json()
+                console.log(`API: Received ${chunkOrders.length} orders for chunk ${index + 1}`)
+                allOrders = [...allOrders, ...chunkOrders]
+              } else {
+                const errorText = await ordersResponse.text()
+                console.error(
+                  `API: Binance API error for orders (chunk ${index + 1}): ${ordersResponse.status}`,
+                  errorText,
+                )
+                // Continuar com os outros endpoints mesmo se este falhar
+              }
+
+              // Esperar um pouco para evitar rate limiting
+              await delay(300)
+
+              // 2. Buscar histórico de trades
+              const tradesEndpoint = "https://fapi.binance.com/fapi/v1/userTrades"
+              const tradesQueryString = addBinanceCommonParams(
+                `timestamp=${timestamp}&limit=1000&startTime=${chunk.start}&endTime=${chunk.end}`,
+              )
+              const tradesSignature = await createHmacSignature(tradesQueryString, apiSecret)
+              const tradesUrl = `${tradesEndpoint}?${tradesQueryString}&signature=${tradesSignature}`
+
+              console.log(`API: Sending request to Binance for trade history (chunk ${index + 1})`)
+
+              const tradesResponse = await rateLimitedRequest(tradesUrl, {
+                method: "GET",
+                headers: {
+                  "X-MBX-APIKEY": apiKey,
+                },
+              })
+
+              if (tradesResponse.ok) {
+                const chunkTrades = await tradesResponse.json()
+                console.log(`API: Received ${chunkTrades.length} trades for chunk ${index + 1}`)
+                allTrades = [...allTrades, ...chunkTrades]
+              } else {
+                const errorText = await tradesResponse.text()
+                console.error(
+                  `API: Binance API error for trades (chunk ${index + 1}): ${tradesResponse.status}`,
+                  errorText,
+                )
+                // Continuar com os outros endpoints mesmo se este falhar
+              }
+
+              // Esperar um pouco para evitar rate limiting
+              await delay(300)
+
+              // 3. Buscar histórico de income
+              const incomeEndpoint = "https://fapi.binance.com/fapi/v1/income"
+              const incomeQueryString = addBinanceCommonParams(
+                `timestamp=${timestamp}&incomeType=REALIZED_PNL&limit=1000&startTime=${chunk.start}&endTime=${chunk.end}`,
+              )
+              const incomeSignature = await createHmacSignature(incomeQueryString, apiSecret)
+              const incomeUrl = `${incomeEndpoint}?${incomeQueryString}&signature=${incomeSignature}`
+
+              console.log(`API: Sending request to Binance for income history (chunk ${index + 1})`)
+
+              const incomeResponse = await rateLimitedRequest(incomeUrl, {
+                method: "GET",
+                headers: {
+                  "X-MBX-APIKEY": apiKey,
+                },
+              })
+
+              if (incomeResponse.ok) {
+                const chunkIncome = await incomeResponse.json()
+                console.log(`API: Received ${chunkIncome.length} income records for chunk ${index + 1}`)
+                allIncome.push(...chunkIncome)
+              } else {
+                const errorText = await incomeResponse.text()
+                console.error(
+                  `API: Binance API error for income (chunk ${index + 1}): ${incomeResponse.status}`,
+                  errorText,
+                )
+                // Continuar com os outros endpoints mesmo se este falhar
+              }
+            } catch (chunkError) {
+              console.error(`API: Error processing chunk ${index + 1}:`, chunkError)
+              // Continuar com os próximos chunks mesmo se este falhar
+            }
+          }
+
+          // Processar os trades para retornar no formato esperado
+          // Limitar ao número solicitado
+          const processedTrades = allTrades.slice(0, limit).map((trade: any) => {
+            return {
+              id: trade.id,
+              symbol: trade.symbol,
+              price: Number.parseFloat(trade.price),
+              qty: Number.parseFloat(trade.qty),
+              quoteQty: Number.parseFloat(trade.quoteQty),
+              commission: Number.parseFloat(trade.commission),
+              commissionAsset: trade.commissionAsset,
+              time: trade.time,
+              isBuyer: trade.buyer,
+              isMaker: trade.maker,
+              side: trade.side || (trade.buyer ? "BUY" : "SELL"),
+              positionSide: trade.positionSide,
+              leverage: trade.leverage ? Number.parseFloat(trade.leverage) : undefined,
+              realizedPnl: trade.realizedPnl ? Number.parseFloat(trade.realizedPnl) : 0,
+            }
+          })
+
+          // Atualizar cache
+          _cachedTradingData = {
+            timestamp: Date.now(),
+            data: {
+              ..._cachedTradingData.data,
+              trades: processedTrades,
+            },
+          }
+
+          console.log(`API: Processed ${processedTrades.length} trades`)
+          return processedTrades
+        } catch (error) {
+          console.error("API: Error fetching trades from Binance Futures:", error)
+          return []
+        }
+      } else {
+        // Implementação para Binance Spot
+        console.log("API: Spot trades not implemented yet, returning empty array")
+        return []
+      }
+    } else {
+      // Outras corretoras podem ser implementadas aqui
+      console.log(`API: Exchange ${exchange} not supported for trades, returning empty array`)
+      return []
+    }
+  } catch (error) {
+    console.error("API: Error fetching trades:", error)
+    return []
+  }
+}
+
 // Modificar a função startWebSocketUpdates para melhor tratamento de erros
 const startWebSocketUpdates = async (connections, callback) => {
   if (!connections || !Array.isArray(connections) || connections.length === 0) {
@@ -782,26 +1009,6 @@ const startWebSocketUpdates = async (connections, callback) => {
   } catch (error) {
     console.error("API: Error starting WebSocket updates:", error)
     return false
-  }
-}
-
-// Remover delays artificiais da função rateLimitedRequest
-async function rateLimitedRequest(url: string, options: RequestInit): Promise<Response> {
-  const now = Date.now()
-  const timeSinceLastRequest = now - lastRequestTime
-
-  if (timeSinceLastRequest < minRequestInterval) {
-    // Reduzir o delay para o mínimo necessário
-    await new Promise((resolve) => setTimeout(resolve, minRequestInterval - timeSinceLastRequest))
-  }
-
-  lastRequestTime = Date.now()
-
-  try {
-    return await fetch(url, options)
-  } catch (error) {
-    console.error("API: Error in rateLimitedRequest:", error)
-    throw error
   }
 }
 
@@ -1267,7 +1474,7 @@ const getPnLData = async (connections: any[]) => {
 
           console.log(`API: Adjusted daily PnL using manual movements: ${dailyPnL} -> ${adjustedDailyPnL}`)
         }
-        // Caso contrário, usar movimentações da Binance
+        // Caso contrário, usar movimentações detectadas da Binance
         else if (capitalMovements && capitalMovements.length > 0) {
           const oneDayAgoTimestamp = Date.now() - 24 * 60 * 60 * 1000
 
@@ -1313,26 +1520,16 @@ const getPnLData = async (connections: any[]) => {
         const dailyPnLPercentage = (adjustedDailyPnL / safeBalance) * 100
         const weeklyPnLPercentage = (adjustedWeeklyPnL / safeBalance) * 100
 
-        console.log("API: Calculated P&L metrics:", {
-          dailyPnL: adjustedDailyPnL,
-          dailyPnLPercentage,
-          weeklyPnL: adjustedWeeklyPnL,
-          weeklyPnLPercentage,
-          highestLeverage,
-          dailyTrades,
-        })
-
         return {
           dailyPnL: adjustedDailyPnL,
-          dailyPnLPercentage,
+          dailyPnLPercentage: dailyPnLPercentage,
           weeklyPnL: adjustedWeeklyPnL,
-          weeklyPnLPercentage,
-          highestLeverage,
-          dailyTrades,
+          weeklyPnLPercentage: weeklyPnLPercentage,
+          highestLeverage: highestLeverage,
+          dailyTrades: dailyTrades,
         }
       } catch (error) {
-        console.error("API: Error fetching P&L data from Binance:", error)
-        // Em caso de erro específico da Binance, retornar valores padrão
+        console.error("API: Error fetching P&L data:", error)
         return {
           dailyPnL: 0,
           dailyPnLPercentage: 0,
@@ -1342,196 +1539,4 @@ const getPnLData = async (connections: any[]) => {
           dailyTrades: 0,
         }
       }
-    } else {
-      // Para outras exchanges
-      console.log(`API: Exchange ${exchange} not supported for P&L data, returning defaults`)
-      return {
-        dailyPnL: 0,
-        dailyPnLPercentage: 0,
-        weeklyPnL: 0,
-        weeklyPnLPercentage: 0,
-        highestLeverage: 0,
-        dailyTrades: 0,
-      }
     }
-  } catch (error) {
-    console.error("API: Error fetching P&L data:", error)
-    // Em caso de erro geral, retornar valores padrão
-    return {
-      dailyPnL: 0,
-      dailyPnLPercentage: 0,
-      weeklyPnL: 0,
-      weeklyPnLPercentage: 0,
-      highestLeverage: 0,
-      dailyTrades: 0,
-    }
-  }
-}
-
-// Exportar o objeto API com todas as funções
-export const api = {
-  // Adicionar as novas funções
-  getBinanceDeposits,
-  getBinanceWithdrawals,
-  getBinanceCapitalMovements,
-  
-  // Adicionar a função
-  startWebSocketUpdates,
-
-  // Modificar as funções existentes
-  getAccountBalance,
-  getPositions,
-  getPnLData,
-
-  checkRealConnections: async (connections: any[]) => {
-    console.log("API: Checking real connections:", connections)
-    const hasConnections = connections.length > 0
-    console.log("API: Has connected exchanges:", hasConnections)
-    return hasConnections
-  },
-
-  getRawExchangeData: () => {
-    return rawExchangeData
-  },
-
-  getLastProcessedBalance: () => {
-    return lastProcessedBalance
-  },
-
-  getTrades: async (connections: any[], limit = 100, startTime?: number) => {
-    console.log(`API: Getting trades history (limit: ${limit}, startTime: ${startTime})`)
-    console.log("API: Connections received:", connections)
-
-    if (!connections || connections.length === 0) {
-      console.log("API: No connected exchanges, returning empty trades")
-      return []
-    }
-
-    try {
-      // Obter a primeira conexão disponível
-      const connection = connections[0]
-      const exchange = connection.exchange.toLowerCase()
-      const apiKey = connection.apiKey
-      const apiSecret = connection.apiSecret
-      const accountType = connection.accountType || "futures"
-
-      console.log(`API: Fetching trade history from ${exchange} exchange with account type ${accountType}`)
-
-      // Tentar buscar dados reais da API da corretora
-      if (exchange === "binance") {
-        // Implementação para Binance
-        if (accountType === "futures") {
-          try {
-            // Implementação para Binance Futures
-            const timestamp = Date.now()
-
-            // Usar o startTime fornecido ou um padrão (30 dias atrás)
-            const defaultStartTime = Date.now() - 30 * 24 * 60 * 60 * 1000 // 30 dias atrás
-            const actualStartTime = startTime || defaultStartTime
-            const endTime = Date.now()
-
-            console.log(
-              `API: Fetching trade history from ${new Date(actualStartTime).toISOString()} to ${new Date(endTime).toISOString()}`,
-            )
-
-            // Dividir o intervalo de tempo em chunks menores para evitar problemas com períodos longos
-            const timeChunks = splitTimeRange(actualStartTime, endTime)
-            console.log(`API: Split time range into ${timeChunks.length} chunks`)
-
-            // Arrays para armazenar os resultados de cada endpoint
-            let allOrders = []
-            let allTrades = []
-            const allIncome = []
-
-            // Buscar dados para cada chunk de tempo
-            for (const [index, chunk] of timeChunks.entries()) {
-              try {
-                console.log(
-                  `API: Processing chunk ${index + 1}/${timeChunks.length}: ${new Date(chunk.start).toISOString()} to ${new Date(chunk.end).toISOString()}`,
-                )
-
-                // 1. Buscar histórico de ordens
-                const ordersEndpoint = "https://fapi.binance.com/fapi/v1/allOrders"
-                const ordersQueryString = addBinanceCommonParams(
-                  `timestamp=${timestamp}&limit=500&startTime=${chunk.start}&endTime=${chunk.end}`,
-                )
-                const ordersSignature = await createHmacSignature(ordersQueryString, apiSecret)
-                const ordersUrl = `${ordersEndpoint}?${ordersQueryString}&signature=${ordersSignature}`
-
-                console.log(`API: Sending request to Binance for order history (chunk ${index + 1})`)
-
-                const ordersResponse = await rateLimitedRequest(ordersUrl, {
-                  method: "GET",
-                  headers: {
-                    "X-MBX-APIKEY": apiKey,
-                  },
-                })
-
-                if (ordersResponse.ok) {
-                  const chunkOrders = await ordersResponse.json()
-                  console.log(`API: Received ${chunkOrders.length} orders for chunk ${index + 1}`)
-                  allOrders = [...allOrders, ...chunkOrders]
-                } else {
-                  const errorText = await ordersResponse.text()
-                  console.error(
-                    `API: Binance API error for orders (chunk ${index + 1}): ${ordersResponse.status}`,
-                    errorText,
-                  )
-                  // Continuar com os outros endpoints mesmo se este falhar
-                }
-
-                // Esperar um pouco para evitar rate limiting
-                await delay(300)
-
-                // 2. Buscar histórico de trades
-                const tradesEndpoint = "https://fapi.binance.com/fapi/v1/userTrades"
-                const tradesQueryString = addBinanceCommonParams(
-                  `timestamp=${timestamp}&limit=1000&startTime=${chunk.start}&endTime=${chunk.end}`,
-                )
-                const tradesSignature = await createHmacSignature(tradesQueryString, apiSecret)
-                const tradesUrl = `${tradesEndpoint}?${tradesQueryString}&signature=${tradesSignature}`
-
-                console.log(`API: Sending request to Binance for trade history (chunk ${index + 1})`)
-
-                const tradesResponse = await rateLimitedRequest(tradesUrl, {
-                  method: "GET",
-                  headers: {
-                    "X-MBX-APIKEY": apiKey,
-                  },
-                })
-
-                if (tradesResponse.ok) {
-                  const chunkTrades = await tradesResponse.json()
-                  console.log(`API: Received ${chunkTrades.length} trades for chunk ${index + 1}`)
-                  allTrades = [...allTrades, ...chunkTrades]
-                } else {
-                  const errorText = await tradesResponse.text()
-                  console.error(
-                    `API: Binance API error for trades (chunk ${index + 1}): ${tradesResponse.status}`,
-                    errorText,
-                  )
-                  // Continuar com os outros endpoints mesmo se este falhar
-                }
-
-                // Esperar um pouco para evitar rate limiting
-                await delay(300)
-
-                // 3. Buscar histórico de income
-                const incomeEndpoint = "https://fapi.binance.com/fapi/v1/income"
-                const incomeQueryString = addBinanceCommonParams(
-                  `timestamp=${timestamp}&incomeType=REALIZED_PNL&limit=1000&startTime=${chunk.start}&endTime=${chunk.end}`,
-                )
-                const incomeSignature = await createHmacSignature(incomeQueryString, apiSecret)
-                const incomeUrl = `${incomeEndpoint}?${incomeQueryString}&signature=${incomeSignature}`
-
-                console.log(`API: Sending request to Binance for income history (chunk ${index + 1})`)
-
-                const incomeResponse = await rateLimitedRequest(incomeUrl, {
-                  method: "GET",
-                  headers: {
-                    "X-MBX-APIKEY": apiKey,
-                  },
-                })
-
-                if (incomeResponse.ok) {
-                  const chunkIncome
