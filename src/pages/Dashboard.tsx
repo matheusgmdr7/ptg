@@ -24,7 +24,7 @@ import UnreportedMovementAlert from "../components/UnreportedMovementAlert"
 import CapitalMovementHistory from "../components/CapitalMovementHistory"
 
 const Dashboard: React.FC = () => {
-  const { balance, positions, trades, connections, setBalance, setPositions, setTrades } = useAppStore()
+  const { balance, positions, trades, connections, setBalance, setPositions, setTrades, setConnections } = useAppStore()
   const { t } = useTranslation()
   const [isLoading, setIsLoading] = useState(true)
   const [tradingPerformanceData, setTradingPerformanceData] = useState<any[]>([])
@@ -109,10 +109,37 @@ const Dashboard: React.FC = () => {
   }
 
   useEffect(() => {
-    fetchData()
+    const loadData = async () => {
+      try {
+        await fetchData()
+
+        // Verificar se temos conexões
+        if (!connections || connections.length === 0) {
+          // Tentar obter conexões do serviço
+          try {
+            const { getExchangeConnections } = await import("../services/supabaseService")
+            const loadedConnections = await getExchangeConnections()
+
+            if (loadedConnections && loadedConnections.length > 0) {
+              console.log("Dashboard: Found connections from service:", loadedConnections.length)
+              setConnections(loadedConnections)
+
+              // Recarregar dados com as novas conexões
+              setTimeout(() => fetchData(), 500)
+            }
+          } catch (connError) {
+            console.error("Dashboard: Error loading connections:", connError)
+          }
+        }
+      } catch (error) {
+        console.error("Dashboard: Error in loadData:", error)
+      }
+    }
+
+    loadData()
     const intervalId = setInterval(fetchData, 30000)
     return () => clearInterval(intervalId)
-  }, [connections, setBalance, setPositions, setTrades])
+  }, [connections, setBalance, setPositions, setTrades, setConnections])
 
   useEffect(() => {
     if (trades && trades.length > 0) {
