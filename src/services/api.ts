@@ -1,3 +1,5 @@
+// Adicionando as novas funções para buscar depósitos e saques da Binance
+
 // Delay function for simulating API latency
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms))
 
@@ -29,6 +31,19 @@ interface RiskLimits {
   maxLeverage: number
   maxDailyTrades: number
   recoveryTime: number
+}
+
+// Interface para depósitos e saques
+interface CapitalMovementRecord {
+  id: string
+  amount: number
+  coin: string
+  network?: string
+  status: string
+  address?: string
+  txId?: string
+  timestamp: number
+  type: "deposit" | "withdrawal"
 }
 
 // Função para converter string para array de bytes
@@ -149,6 +164,8 @@ const _cacheTimestamps = {
   positions: 0,
   riskStatus: 0,
   behaviors: 0,
+  deposits: 0,
+  withdrawals: 0,
 }
 
 // Adicionar função para gerenciar WebSockets
@@ -163,6 +180,8 @@ let _cachedTradingData = {
     positions: [],
     trades: [],
     pnlData: {},
+    deposits: [],
+    withdrawals: [],
   },
 }
 
@@ -786,14 +805,580 @@ async function rateLimitedRequest(url: string, options: RequestInit): Promise<Re
   }
 }
 
+// Nova função para buscar depósitos da Binance
+const getBinanceDeposits = async (
+  connections: any[],
+  accountType: "spot" | "futures" = "spot",
+  skipCache = false,
+): Promise<CapitalMovementRecord[]> => {
+  console.log(`API: Getting Binance deposits for account type: ${accountType}`)
+
+  // Validar as conexões recebidas
+  if (!connections || !Array.isArray(connections) || connections.length === 0) {
+    console.log("API: No connected exchanges or invalid connections, returning empty deposits")
+    return []
+  }
+
+  // Verificar cache se não estiver pulando o cache
+  if (
+    !skipCache &&
+    _cachedTradingData &&
+    Date.now() - _cachedTradingData.timestamp < 300000 && // Cache válido por 5 minutos
+    _cachedTradingData.data.deposits &&
+    _cachedTradingData.data.deposits.length > 0
+  ) {
+    console.log("API: Using cached deposits data (valid for 5 minutes)")
+    return _cachedTradingData.data.deposits
+  }
+
+  try {
+    // Obter a primeira conexão disponível
+    const connection = connections[0]
+
+    // Validar a conexão
+    if (!connection || !connection.exchange || !connection.apiKey || !connection.apiSecret) {
+      console.error("API: Invalid connection object:", connection)
+      return []
+    }
+
+    const exchange = connection.exchange.toLowerCase()
+    const apiKey = connection.apiKey
+    const apiSecret = connection.apiSecret
+
+    // Verificar se é Binance
+    if (exchange !== "binance") {
+      console.log(`API: Exchange ${exchange} not supported for deposits, returning empty array`)
+      return []
+    }
+
+    console.log(`API: Fetching deposits from Binance for account type ${accountType}`)
+
+    // Calcular timestamp para 7 dias atrás
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+    const timestamp = Date.now()
+
+    // Endpoint para depósitos
+    const endpoint = "https://api.binance.com/sapi/v1/capital/deposit/hisrec"
+
+    // Criar a string para assinatura com recvWindow
+    const queryString = addBinanceCommonParams(`timestamp=${timestamp}&startTime=${sevenDaysAgo}`)
+
+    // Criar a assinatura HMAC SHA256
+    const signature = await createHmacSignature(queryString, apiSecret)
+
+    // URL completa com parâmetros
+    const url = `${endpoint}?${queryString}&signature=${signature}`
+
+    console.log(`API: Sending request to Binance for deposits: ${url}`)
+
+    // Fazer a requisição à API da Binance com rate limiting
+    const response = await rateLimitedRequest(url, {
+      method: "GET",
+      headers: {
+        "X-MBX-APIKEY": apiKey,
+      },
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error(`API: Binance API error: ${response.status} ${response.statusText}`, errorText)
+      throw new Error(`Binance API error: ${response.status} ${response.statusText} - ${errorText}`)
+    }
+
+    const depositsData = await response.json()
+    console.log(`API: Raw Binance deposits response received with ${depositsData.length} items`)
+
+    // Processar os depósitos da Binance
+    const deposits = depositsData
+      .filter((deposit: any) => deposit.status === 1) // Filtrar apenas depósitos concluídos
+      .map((deposit: any) => {
+        return {
+          id: deposit.txId || `deposit-${deposit.insertTime}`,
+          amount: Number.parseFloat(deposit.amount || "0"),
+          coin: deposit.coin,
+          network: deposit.network,
+          status: deposit.status === 1 ? "completed" : "pending",
+          address: deposit.address,
+          txId: deposit.txId,
+          timestamp: deposit.insertTime,
+          type: "deposit" as const,
+        }
+      })
+
+    console.log(`API: Processed ${deposits.length} Binance deposits`)
+
+    // Atualizar cache
+    _cachedTradingData = {
+      timestamp: Date.now(),
+      data: {
+        ..._cachedTradingData.data,
+        deposits: deposits,
+      },
+    }
+    _cacheTimestamps.deposits = Date.now()
+
+    return deposits
+  } catch (error) {
+    console.error("API: Error fetching deposits from Binance:", error)
+    return []
+  }
+}
+
+// Nova função para buscar saques da Binance
+const getBinanceWithdrawals = async (
+  connections: any[],
+  accountType: "spot" | "futures" = "spot",
+  skipCache = false,
+): Promise<CapitalMovementRecord[]> => {
+  console.log(`API: Getting Binance withdrawals for account type: ${accountType}`)
+
+  // Validar as conexões recebidas
+  if (!connections || !Array.isArray(connections) || connections.length === 0) {
+    console.log("API: No connected exchanges or invalid connections, returning empty withdrawals")
+    return []
+  }
+
+  // Verificar cache se não estiver pulando o cache
+  if (
+    !skipCache &&
+    _cachedTradingData &&
+    Date.now() - _cachedTradingData.timestamp < 300000 && // Cache válido por 5 minutos
+    _cachedTradingData.data.withdrawals &&
+    _cachedTradingData.data.withdrawals.length > 0
+  ) {
+    console.log("API: Using cached withdrawals data (valid for 5 minutes)")
+    return _cachedTradingData.data.withdrawals
+  }
+
+  try {
+    // Obter a primeira conexão disponível
+    const connection = connections[0]
+
+    // Validar a conexão
+    if (!connection || !connection.exchange || !connection.apiKey || !connection.apiSecret) {
+      console.error("API: Invalid connection object:", connection)
+      return []
+    }
+
+    const exchange = connection.exchange.toLowerCase()
+    const apiKey = connection.apiKey
+    const apiSecret = connection.apiSecret
+
+    // Verificar se é Binance
+    if (exchange !== "binance") {
+      console.log(`API: Exchange ${exchange} not supported for withdrawals, returning empty array`)
+      return []
+    }
+
+    console.log(`API: Fetching withdrawals from Binance for account type ${accountType}`)
+
+    // Calcular timestamp para 7 dias atrás
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+    const timestamp = Date.now()
+
+    // Endpoint para saques
+    const endpoint = "https://api.binance.com/sapi/v1/capital/withdraw/history"
+
+    // Criar a string para assinatura com recvWindow
+    const queryString = addBinanceCommonParams(`timestamp=${timestamp}&startTime=${sevenDaysAgo}`)
+
+    // Criar a assinatura HMAC SHA256
+    const signature = await createHmacSignature(queryString, apiSecret)
+
+    // URL completa com parâmetros
+    const url = `${endpoint}?${queryString}&signature=${signature}`
+
+    console.log(`API: Sending request to Binance for withdrawals: ${url}`)
+
+    // Fazer a requisição à API da Binance com rate limiting
+    const response = await rateLimitedRequest(url, {
+      method: "GET",
+      headers: {
+        "X-MBX-APIKEY": apiKey,
+      },
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error(`API: Binance API error: ${response.status} ${response.statusText}`, errorText)
+      throw new Error(`Binance API error: ${response.status} ${response.statusText} - ${errorText}`)
+    }
+
+    const withdrawalsData = await response.json()
+    console.log(`API: Raw Binance withdrawals response received with ${withdrawalsData.length} items`)
+
+    // Processar os saques da Binance
+    const withdrawals = withdrawalsData
+      .filter((withdrawal: any) => withdrawal.status === 6) // Filtrar apenas saques concluídos (6 = completed)
+      .map((withdrawal: any) => {
+        return {
+          id: withdrawal.id || `withdrawal-${withdrawal.applyTime}`,
+          amount: Number.parseFloat(withdrawal.amount || "0"),
+          coin: withdrawal.coin,
+          network: withdrawal.network,
+          status: withdrawal.status === 6 ? "completed" : "pending",
+          address: withdrawal.address,
+          txId: withdrawal.txId,
+          timestamp: withdrawal.applyTime,
+          type: "withdrawal" as const,
+        }
+      })
+
+    console.log(`API: Processed ${withdrawals.length} Binance withdrawals`)
+
+    // Atualizar cache
+    _cachedTradingData = {
+      timestamp: Date.now(),
+      data: {
+        ..._cachedTradingData.data,
+        withdrawals: withdrawals,
+      },
+    }
+    _cacheTimestamps.withdrawals = Date.now()
+
+    return withdrawals
+  } catch (error) {
+    console.error("API: Error fetching withdrawals from Binance:", error)
+    return []
+  }
+}
+
+// Função para obter todas as movimentações de capital (depósitos e saques)
+const getBinanceCapitalMovements = async (
+  connections: any[],
+  accountType: "spot" | "futures" = "spot",
+  skipCache = false,
+): Promise<CapitalMovementRecord[]> => {
+  console.log(`API: Getting all Binance capital movements for account type: ${accountType}`)
+
+  try {
+    // Buscar depósitos e saques em paralelo
+    const [deposits, withdrawals] = await Promise.all([
+      getBinanceDeposits(connections, accountType, skipCache),
+      getBinanceWithdrawals(connections, accountType, skipCache),
+    ])
+
+    // Combinar os resultados
+    const allMovements = [...deposits, ...withdrawals]
+
+    // Ordenar por timestamp (mais recente primeiro)
+    allMovements.sort((a, b) => b.timestamp - a.timestamp)
+
+    console.log(`API: Combined ${deposits.length} deposits and ${withdrawals.length} withdrawals`)
+    return allMovements
+  } catch (error) {
+    console.error("API: Error getting combined capital movements:", error)
+    return []
+  }
+}
+
+// Modificar a função getPnLData para considerar movimentações de capital
+const getPnLData = async (connections: any[]) => {
+  console.log("API: Getting P&L data")
+  console.log("API: Connections received:", connections)
+
+  // Verificar se connections é um array válido e não está vazio
+  if (!connections || !Array.isArray(connections) || connections.length === 0) {
+    console.log("API: No connected exchanges or invalid connections array, returning zero P&L")
+    return {
+      dailyPnL: 0,
+      dailyPnLPercentage: 0,
+      weeklyPnL: 0,
+      weeklyPnLPercentage: 0,
+      highestLeverage: 0,
+      dailyTrades: 0,
+    }
+  }
+
+  // Verificar se a primeira conexão é válida
+  const connection = connections[0]
+  if (!connection || typeof connection !== "object") {
+    console.log("API: First connection is invalid or undefined, returning zero P&L")
+    return {
+      dailyPnL: 0,
+      dailyPnLPercentage: 0,
+      weeklyPnLPercentage: 0,
+      highestLeverage: 0,
+      dailyTrades: 0,
+    }
+  }
+
+  try {
+    // Verificar se a conexão tem as propriedades necessárias
+    const exchange = connection.exchange?.toLowerCase() || ""
+    const apiKey = connection.apiKey || ""
+    const apiSecret = connection.apiSecret || ""
+    const accountType = connection.accountType || "futures"
+
+    // Verificar se temos as informações mínimas necessárias
+    if (!exchange || !apiKey || !apiSecret) {
+      console.log("API: Missing required connection properties (exchange, apiKey, or apiSecret), returning zero P&L")
+      return {
+        dailyPnL: 0,
+        dailyPnLPercentage: 0,
+        weeklyPnLPercentage: 0,
+        highestLeverage: 0,
+        dailyTrades: 0,
+      }
+    }
+
+    console.log(`API: Fetching P&L data from ${exchange} ${accountType} account`)
+
+    // Buscar movimentações de capital da Binance
+    let capitalMovements = []
+    try {
+      capitalMovements = await getBinanceCapitalMovements(connections, accountType)
+      console.log(`API: Retrieved ${capitalMovements.length} capital movements from Binance`)
+    } catch (movError) {
+      console.error("API: Error fetching capital movements:", movError)
+    }
+
+    // Buscar movimentações manuais do Supabase
+    let manualMovements = []
+    try {
+      const { getCapitalMovementTotals } = await import("../services/capitalMovementService")
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+
+      const dailyMovements = await getCapitalMovementTotals(oneDayAgo)
+      const weeklyMovements = await getCapitalMovementTotals(sevenDaysAgo)
+
+      manualMovements = { daily: dailyMovements, weekly: weeklyMovements }
+      console.log("API: Retrieved manual capital movements:", manualMovements)
+    } catch (manualError) {
+      console.error("API: Error fetching manual capital movements:", manualError)
+    }
+
+    // Implementação específica para Binance
+    if (exchange === "binance") {
+      try {
+        const timestamp = Date.now()
+
+        // Calcular timestamps
+        const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
+        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+
+        // Endpoint para income (inclui PnL realizado)
+        const incomeEndpoint = "https://fapi.binance.com/fapi/v1/income"
+
+        // Buscar PnL diário (últimas 24h)
+        const dailyQueryString = addBinanceCommonParams(
+          `timestamp=${timestamp}&incomeType=REALIZED_PNL&startTime=${oneDayAgo}`,
+        )
+        const dailySignature = await createHmacSignature(dailyQueryString, apiSecret)
+        const dailyUrl = `${incomeEndpoint}?${dailyQueryString}&signature=${dailySignature}`
+
+        console.log(`API: Sending request for daily P&L: ${dailyUrl}`)
+
+        const dailyResponse = await rateLimitedRequest(dailyUrl, {
+          headers: { "X-MBX-APIKEY": apiKey },
+        })
+
+        // Buscar PnL semanal (últimos 7 dias)
+        const weeklyQueryString = addBinanceCommonParams(
+          `timestamp=${timestamp}&incomeType=REALIZED_PNL&startTime=${sevenDaysAgo}`,
+        )
+        const weeklySignature = await createHmacSignature(weeklyQueryString, apiSecret)
+        const weeklyUrl = `${incomeEndpoint}?${weeklyQueryString}&signature=${weeklySignature}`
+
+        console.log(`API: Sending request for weekly P&L: ${weeklyUrl}`)
+
+        const weeklyResponse = await rateLimitedRequest(weeklyUrl, {
+          headers: { "X-MBX-APIKEY": apiKey },
+        })
+
+        // Buscar histórico de trades para calcular alavancagem máxima e número de trades
+        const tradesEndpoint = "https://fapi.binance.com/fapi/v1/userTrades"
+        const tradesQueryString = addBinanceCommonParams(`timestamp=${timestamp}&limit=100&startTime=${oneDayAgo}`)
+        const tradesSignature = await createHmacSignature(tradesQueryString, apiSecret)
+        const tradesUrl = `${tradesEndpoint}?${tradesQueryString}&signature=${tradesSignature}`
+
+        console.log(`API: Sending request for trades history: ${tradesUrl}`)
+
+        const tradesResponse = await rateLimitedRequest(tradesUrl, {
+          headers: { "X-MBX-APIKEY": apiKey },
+        })
+
+        // Verificar se todas as requisições foram bem-sucedidas
+        let dailyData = []
+        let weeklyData = []
+        let tradesData = []
+
+        if (dailyResponse.ok) {
+          dailyData = await dailyResponse.json()
+          console.log("API: Received daily P&L data:", dailyData)
+        } else {
+          console.error(`API: Failed to fetch daily P&L data: ${dailyResponse.status}`)
+        }
+
+        if (weeklyResponse.ok) {
+          weeklyData = await weeklyResponse.json()
+          console.log("API: Received weekly P&L data:", weeklyData)
+        } else {
+          console.error(`API: Failed to fetch weekly P&L data: ${weeklyResponse.status}`)
+        }
+
+        if (tradesResponse.ok) {
+          tradesData = await tradesResponse.json()
+          console.log("API: Received trades data:", tradesData)
+        } else {
+          console.error(`API: Failed to fetch trades data: ${tradesResponse.status}`)
+        }
+
+        // Calcular P&L total
+        const dailyPnL = dailyData.reduce((sum: number, item: any) => sum + Number.parseFloat(item.income), 0)
+        const weeklyPnL = weeklyData.reduce((sum: number, item: any) => sum + Number.parseFloat(item.income), 0)
+
+        // Calcular alavancagem máxima e número de trades
+        let highestLeverage = 0
+        const uniqueOrderIds = new Set()
+
+        if (Array.isArray(tradesData)) {
+          tradesData.forEach((trade: any) => {
+            // Contar trades únicos (por orderId)
+            uniqueOrderIds.add(trade.orderId)
+
+            // Verificar alavancagem se disponível
+            if (trade.leverage) {
+              const leverage = Number.parseFloat(trade.leverage)
+              if (leverage > highestLeverage) {
+                highestLeverage = leverage
+              }
+            }
+          })
+        }
+
+        const dailyTrades = uniqueOrderIds.size
+
+        // Obter saldo total para calcular percentuais
+        const balanceData = await api.getAccountBalance(connections, accountType)
+        const totalBalance = balanceData.total
+
+        // Ajustar o PnL considerando as movimentações de capital
+        // Prioridade: registros manuais > movimentações detectadas da Binance
+        let adjustedDailyPnL = dailyPnL
+        let adjustedWeeklyPnL = weeklyPnL
+
+        // Usar registros manuais se disponíveis
+        if (manualMovements && manualMovements.daily) {
+          const dailyDeposits = manualMovements.daily.deposits || 0
+          const dailyWithdrawals = manualMovements.daily.withdrawals || 0
+          adjustedDailyPnL = dailyPnL - dailyDeposits + dailyWithdrawals
+
+          console.log(`API: Adjusted daily PnL using manual movements: ${dailyPnL} -> ${adjustedDailyPnL}`)
+        }
+        // Caso contrário, usar movimentações da Binance
+        else if (capitalMovements && capitalMovements.length > 0) {
+          const oneDayAgoTimestamp = Date.now() - 24 * 60 * 60 * 1000
+
+          const dailyBinanceDeposits = capitalMovements
+            .filter((m) => m.type === "deposit" && m.timestamp >= oneDayAgoTimestamp)
+            .reduce((sum, m) => sum + m.amount, 0)
+
+          const dailyBinanceWithdrawals = capitalMovements
+            .filter((m) => m.type === "withdrawal" && m.timestamp >= oneDayAgoTimestamp)
+            .reduce((sum, m) => sum + m.amount, 0)
+
+          adjustedDailyPnL = dailyPnL - dailyBinanceDeposits + dailyBinanceWithdrawals
+
+          console.log(`API: Adjusted daily PnL using Binance movements: ${dailyPnL} -> ${adjustedDailyPnL}`)
+        }
+
+        // Mesmo processo para PnL semanal
+        if (manualMovements && manualMovements.weekly) {
+          const weeklyDeposits = manualMovements.weekly.deposits || 0
+          const weeklyWithdrawals = manualMovements.weekly.withdrawals || 0
+          adjustedWeeklyPnL = weeklyPnL - weeklyDeposits + weeklyWithdrawals
+
+          console.log(`API: Adjusted weekly PnL using manual movements: ${weeklyPnL} -> ${adjustedWeeklyPnL}`)
+        } else if (capitalMovements && capitalMovements.length > 0) {
+          const sevenDaysAgoTimestamp = Date.now() - 7 * 24 * 60 * 60 * 1000
+
+          const weeklyBinanceDeposits = capitalMovements
+            .filter((m) => m.type === "deposit" && m.timestamp >= sevenDaysAgoTimestamp)
+            .reduce((sum, m) => sum + m.amount, 0)
+
+          const weeklyBinanceWithdrawals = capitalMovements
+            .filter((m) => m.type === "withdrawal" && m.timestamp >= sevenDaysAgoTimestamp)
+            .reduce((sum, m) => sum + m.amount, 0)
+
+          adjustedWeeklyPnL = weeklyPnL - weeklyBinanceDeposits + weeklyBinanceWithdrawals
+
+          console.log(`API: Adjusted weekly PnL using Binance movements: ${weeklyPnL} -> ${adjustedWeeklyPnL}`)
+        }
+
+        // Calcular percentuais (em relação ao saldo atual)
+        // Usamos Math.max com um valor pequeno para evitar divisão por zero
+        const safeBalance = Math.max(totalBalance, 0.0001)
+        const dailyPnLPercentage = (adjustedDailyPnL / safeBalance) * 100
+        const weeklyPnLPercentage = (adjustedWeeklyPnL / safeBalance) * 100
+
+        console.log("API: Calculated P&L metrics:", {
+          dailyPnL: adjustedDailyPnL,
+          dailyPnLPercentage,
+          weeklyPnL: adjustedWeeklyPnL,
+          weeklyPnLPercentage,
+          highestLeverage,
+          dailyTrades,
+        })
+
+        return {
+          dailyPnL: adjustedDailyPnL,
+          dailyPnLPercentage,
+          weeklyPnL: adjustedWeeklyPnL,
+          weeklyPnLPercentage,
+          highestLeverage,
+          dailyTrades,
+        }
+      } catch (error) {
+        console.error("API: Error fetching P&L data from Binance:", error)
+        // Em caso de erro específico da Binance, retornar valores padrão
+        return {
+          dailyPnL: 0,
+          dailyPnLPercentage: 0,
+          weeklyPnLPercentage: 0,
+          highestLeverage: 0,
+          dailyTrades: 0,
+        }
+      }
+    } else {
+      // Para outras exchanges
+      console.log(`API: Exchange ${exchange} not supported for P&L data, returning defaults`)
+      return {
+        dailyPnL: 0,
+        dailyPnLPercentage: 0,
+        weeklyPnLPercentage: 0,
+        highestLeverage: 0,
+        dailyTrades: 0,
+      }
+    }
+  } catch (error) {
+    console.error("API: Error fetching P&L data:", error)
+    // Em caso de erro geral, retornar valores padrão
+    return {
+      dailyPnL: 0,
+      dailyPnLPercentage: 0,
+      weeklyPnLPercentage: 0,
+      highestLeverage: 0,
+      dailyTrades: 0,
+    }
+  }
+}
+
 // Exportar o objeto API com todas as funções
 export const api = {
-  // Adicionar a nova função
+  // Adicionar as novas funções
+  getBinanceDeposits,
+  getBinanceWithdrawals,
+  getBinanceCapitalMovements,
+  
+  // Adicionar a função
   startWebSocketUpdates,
 
   // Modificar as funções existentes
   getAccountBalance,
   getPositions,
+  getPnLData,
 
   checkRealConnections: async (connections: any[]) => {
     console.log("API: Checking real connections:", connections)
@@ -853,7 +1438,7 @@ export const api = {
             // Arrays para armazenar os resultados de cada endpoint
             let allOrders = []
             let allTrades = []
-            let allIncome = []
+            const allIncome = []
 
             // Buscar dados para cada chunk de tempo
             for (const [index, chunk] of timeChunks.entries()) {
@@ -934,1092 +1519,4 @@ export const api = {
                   `timestamp=${timestamp}&incomeType=REALIZED_PNL&limit=1000&startTime=${chunk.start}&endTime=${chunk.end}`,
                 )
                 const incomeSignature = await createHmacSignature(incomeQueryString, apiSecret)
-                const incomeUrl = `${incomeEndpoint}?${incomeQueryString}&signature=${incomeSignature}`
-
-                console.log(`API: Sending request to Binance for income history (chunk ${index + 1})`)
-
-                const incomeResponse = await rateLimitedRequest(incomeUrl, {
-                  method: "GET",
-                  headers: {
-                    "X-MBX-APIKEY": apiKey,
-                  },
-                })
-
-                if (incomeResponse.ok) {
-                  const chunkIncome = await incomeResponse.json()
-                  console.log(`API: Received ${chunkIncome.length} income entries for chunk ${index + 1}`)
-                  allIncome = [...allIncome, ...chunkIncome]
-                } else {
-                  const errorText = await incomeResponse.text()
-                  console.error(
-                    `API: Binance API error for income (chunk ${index + 1}): ${incomeResponse.status}`,
-                    errorText,
-                  )
-                  // Continuar mesmo se este endpoint falhar
-                }
-
-                // Esperar um pouco mais entre chunks
-                await delay(500)
-              } catch (chunkError) {
-                console.error(`API: Error processing time chunk ${index + 1}:`, chunkError)
-                // Continuar com o próximo chunk mesmo se este falhar
-              }
-            }
-
-            console.log(
-              `API: Collected data from all chunks: ${allOrders.length} orders, ${allTrades.length} trades, ${allIncome.length} income entries`,
-            )
-
-            // Processar os dados para criar um histórico de trades completo
-            // Primeiro, agrupar trades por orderId
-            const tradesByOrderId = new Map()
-
-            if (allTrades.length > 0) {
-              allTrades.forEach((trade) => {
-                const orderId = trade.orderId.toString()
-
-                if (!tradesByOrderId.has(orderId)) {
-                  tradesByOrderId.set(orderId, [])
-                }
-
-                tradesByOrderId.get(orderId).push(trade)
-              })
-            }
-
-            // Criar um mapa de PnL por símbolo e timestamp
-            const pnlBySymbolTime = new Map()
-
-            if (allIncome.length > 0) {
-              allIncome.forEach((income) => {
-                if (!income.symbol) return
-
-                const key = `${income.symbol}-${income.time}`
-                const pnl = Number.parseFloat(income.income)
-
-                pnlBySymbolTime.set(key, (pnlBySymbolTime.get(key) || 0) + pnl)
-              })
-            }
-
-            // Processar ordens para criar o histórico de trades
-            const processedTrades = []
-
-            if (allOrders.length > 0) {
-              // Filtrar apenas ordens executadas (status: FILLED)
-              const filledOrders = allOrders.filter((order) => order.status === "FILLED")
-
-              // Ordenar por tempo (mais recente primeiro)
-              filledOrders.sort((a, b) => b.time - a.time)
-
-              // Processar cada ordem
-              for (const order of filledOrders) {
-                const orderId = order.orderId.toString()
-                const symbol = order.symbol
-                const side = order.side.toLowerCase()
-                const orderTime = order.time
-
-                // Obter os trades associados a esta ordem
-                const orderTrades = tradesByOrderId.get(orderId) || []
-
-                // Calcular preço médio e tamanho total
-                let totalSize = 0
-                let totalValue = 0
-                let leverage = 0
-
-                orderTrades.forEach((trade) => {
-                  const size = Number.parseFloat(trade.qty)
-                  const price = Number.parseFloat(trade.price)
-                  totalSize += size
-                  totalValue += size * price
-
-                  // Obter alavancagem se disponível
-                  if (trade.leverage) {
-                    leverage = Math.max(leverage, Number.parseFloat(trade.leverage))
-                  }
-                })
-
-                // Se não temos trades específicos, usar dados da ordem
-                if (totalSize === 0) {
-                  totalSize = Number.parseFloat(order.executedQty)
-                  const avgPrice = Number.parseFloat(order.avgPrice)
-                  totalValue = totalSize * (avgPrice > 0 ? avgPrice : Number.parseFloat(order.price))
-                }
-
-                // Calcular preço médio
-                const avgPrice = totalSize > 0 ? totalValue / totalSize : Number.parseFloat(order.price)
-
-                // Tentar encontrar o PnL associado
-                // Procurar em um intervalo de tempo próximo à ordem
-                const timeWindow = 10 * 60 * 1000 // 10 minutos
-                let pnl = 0
-
-                for (const [key, value] of pnlBySymbolTime.entries()) {
-                  const [pnlSymbol, pnlTimeStr] = key.split("-")
-                  const pnlTime = Number.parseInt(pnlTimeStr)
-
-                  if (pnlSymbol === symbol && Math.abs(pnlTime - orderTime) < timeWindow) {
-                    pnl = value
-                    // Remover este PnL do mapa para não usá-lo novamente
-                    pnlBySymbolTime.delete(key)
-                    break
-                  }
-                }
-
-                // Se não encontramos PnL, tentar estimar com base no lado da ordem
-                if (pnl === 0 && orderTrades.length > 0) {
-                  // Estimar com base no último trade
-                  const lastTrade = orderTrades[orderTrades.length - 1]
-                  if (lastTrade.realizedPnl) {
-                    pnl = Number.parseFloat(lastTrade.realizedPnl)
-                  }
-                }
-
-                // Filtrar operações com PnL zero
-                if (pnl === 0) {
-                  continue // Pular esta operação se o PnL for zero
-                }
-
-                // Criar o objeto de trade processado
-                processedTrades.push({
-                  id: orderId,
-                  symbol: symbol,
-                  side: side,
-                  price: avgPrice,
-                  size: totalSize,
-                  leverage: leverage || 10, // Usar 10 como padrão se não encontrarmos
-                  pnl: pnl,
-                  timestamp: orderTime,
-                })
-
-                // Limitar ao número solicitado
-                if (processedTrades.length >= limit) {
-                  break
-                }
-              }
-            }
-
-            console.log(`API: Processed ${processedTrades.length} trades from Binance history`)
-            return processedTrades
-          } catch (error) {
-            console.error("API: Error fetching trade history from Binance Futures:", error)
-            return []
-          }
-        } else {
-          // Para contas spot
-          console.log("API: Spot account trade history not fully implemented yet")
-          return []
-        }
-      } else {
-        console.log(`API: Exchange ${exchange} not supported for fetching trade history`)
-        return []
-      }
-    } catch (error) {
-      console.error("API: Error fetching trade history:", error)
-      return []
-    }
-  },
-
-  // Modifique a função getRiskStatus para retornar dados reais em vez de valores padrão
-  getRiskStatus: async (connections: any[]) => {
-    console.log("API: Getting risk status")
-    console.log("API: Connections received:", connections)
-
-    if (!connections || connections.length === 0) {
-      console.log("API: No connected exchanges, returning default risk status")
-      return {
-        currentRisk: 0,
-        riskLevel: "low",
-        dailyLoss: 0,
-        weeklyLoss: 0,
-        weeklyProfit: 0,
-        dailyTrades: 0,
-        highestLeverage: 0,
-        tradingAllowed: true,
-        eligibleForUpgrade: false,
-      }
-    }
-
-    try {
-      // Obter dados de P&L para calcular o status de risco
-      const pnlData = await api.getPnLData(connections)
-      console.log("API: P&L data for risk status calculation:", pnlData)
-
-      // Calcular o nível de risco atual com base nos dados de P&L
-      let currentRisk = 0
-      let riskLevel = "low"
-
-      // Usar os dados de P&L para calcular o risco atual
-      // Quanto maior a perda diária/semanal, maior o risco
-      if (pnlData.dailyPnLPercentage < 0) {
-        const dailyLossPercentage = Math.abs(pnlData.dailyPnLPercentage)
-        // Escala de 0-100 baseada na perda diária (considerando 10% como perda máxima)
-        const dailyRisk = Math.min(100, (dailyLossPercentage / 10) * 100)
-        currentRisk = Math.max(currentRisk, dailyRisk)
-      }
-
-      if (pnlData.weeklyPnLPercentage < 0) {
-        const weeklyLossPercentage = Math.abs(pnlData.weeklyPnLPercentage)
-        // Escala de 0-100 baseada na perda semanal (considerando 20% como perda máxima)
-        const weeklyRisk = Math.min(100, (weeklyLossPercentage / 20) * 100)
-        currentRisk = Math.max(currentRisk, weeklyRisk)
-      }
-
-      // Determinar o nível de risco qualitativo
-      if (currentRisk >= 90) {
-        riskLevel = "critical"
-      } else if (currentRisk >= 70) {
-        riskLevel = "high"
-      } else if (currentRisk >= 40) {
-        riskLevel = "medium"
-      } else {
-        riskLevel = "low"
-      }
-
-      // Determinar se o trading está permitido (bloquear se o risco for crítico)
-      const tradingAllowed = currentRisk < 90
-
-      // Verificar se o usuário é elegível para upgrade (lucro semanal de pelo menos 10%)
-      const eligibleForUpgrade = pnlData.weeklyPnLPercentage >= 10
-
-      return {
-        currentRisk,
-        riskLevel,
-        dailyLoss: pnlData.dailyPnLPercentage < 0 ? Math.abs(pnlData.dailyPnLPercentage) : 0,
-        weeklyLoss: pnlData.weeklyPnLPercentage < 0 ? Math.abs(pnlData.weeklyPnLPercentage) : 0,
-        weeklyProfit: pnlData.weeklyPnLPercentage > 0 ? pnlData.weeklyPnLPercentage : 0,
-        dailyTrades: pnlData.dailyTrades,
-        highestLeverage: pnlData.highestLeverage,
-        tradingAllowed,
-        eligibleForUpgrade,
-      }
-    } catch (error) {
-      console.error("API: Error calculating risk status:", error)
-      return {
-        currentRisk: 0,
-        riskLevel: "low",
-        dailyLoss: 0,
-        weeklyLoss: 0,
-        weeklyProfit: 0,
-        dailyTrades: 0,
-        highestLeverage: 0,
-        tradingAllowed: true,
-        eligibleForUpgrade: false,
-      }
-    }
-  },
-
-  // Modifique a função getBehaviors para integrar corretamente com as funções de análise de comportamento
-  getBehaviors: async (connections: any[], days = 30) => {
-    console.log(`API: Getting behaviors for the last ${days} days`)
-    console.log("API: Connections received:", connections)
-
-    if (!connections || connections.length === 0) {
-      console.log("API: No connected exchanges, returning empty behaviors")
-      return []
-    }
-
-    try {
-      // Importar as funções de análise de comportamento
-      const {
-        detectExcessiveLeverage,
-        detectEmotionalTrading,
-        detectRiskLimitViolation,
-        detectMultipleHighLeveragePositions,
-      } = await import("../services/behaviorAnalysis")
-
-      // Calcular o timestamp para o número de dias especificado
-      const startTime = Date.now() - days * 24 * 60 * 60 * 1000
-
-      // Buscar dados necessários para análise, limitando ao período especificado
-      const positions = await api.getPositions(connections)
-      const trades = await api.getTrades(connections, 50, startTime) // Buscar apenas os últimos 50 trades no período
-      const pnlData = await api.getPnLData(connections)
-
-      console.log("API: Data for behavior analysis:", {
-        positionsCount: positions.length,
-        tradesCount: trades.length,
-        pnlData: pnlData,
-        period: `${days} days (since ${new Date(startTime).toISOString()})}`,
-      })
-
-      // Definir limites de risco com base no perfil do usuário
-      // Estes valores podem ser obtidos do perfil do usuário ou configurações
-      const riskLimits = {
-        dailyLossLimit: 2.0, // 2% de perda diária máxima
-        weeklyLossLimit: 5.0, // 5% de perda semanal máxima
-        maxLeverage: 10, // Alavancagem máxima recomendada
-        maxDailyTrades: 20, // Número máximo de trades diários
-        recoveryTime: 24, // Tempo de recuperação em horas
-      }
-
-      // Executar as análises de comportamento
-      const behaviors = []
-
-      // 1. Detectar uso excessivo de alavancagem
-      const excessiveLeverageBehavior = detectExcessiveLeverage(trades, positions, riskLimits)
-      if (excessiveLeverageBehavior) {
-        console.log("API: Detected excessive leverage behavior:", excessiveLeverageBehavior)
-        behaviors.push(excessiveLeverageBehavior)
-      }
-
-      // 2. Detectar trading emocional
-      const emotionalTradingBehavior = detectEmotionalTrading(trades)
-      if (emotionalTradingBehavior) {
-        console.log("API: Detected emotional trading behavior:", emotionalTradingBehavior)
-        behaviors.push(emotionalTradingBehavior)
-      }
-
-      // 3. Detectar violação de limites de risco
-      const riskLimitViolationBehavior = detectRiskLimitViolation(
-        pnlData.dailyPnLPercentage,
-        pnlData.weeklyPnLPercentage,
-        riskLimits,
-      )
-      if (riskLimitViolationBehavior) {
-        console.log("API: Detected risk limit violation behavior:", riskLimitViolationBehavior)
-        behaviors.push(riskLimitViolationBehavior)
-      }
-
-      // 4. Detectar múltiplas operações com alta alavancagem
-      const multipleHighLeverageBehavior = detectMultipleHighLeveragePositions(positions, riskLimits)
-      if (multipleHighLeverageBehavior) {
-        console.log("API: Detected multiple high leverage positions behavior:", multipleHighLeverageBehavior)
-        behaviors.push(multipleHighLeverageBehavior)
-      }
-
-      console.log(`API: Behavior analysis complete. Found ${behaviors.length} behaviors.`)
-      return behaviors
-    } catch (error) {
-      console.error("API: Error analyzing behaviors:", error)
-      return []
-    }
-  },
-
-  getPnLData: async (connections: any[]) => {
-    console.log("API: Getting P&L data")
-    console.log("API: Connections received:", connections)
-
-    // Verificar se connections é um array válido e não está vazio
-    if (!connections || !Array.isArray(connections) || connections.length === 0) {
-      console.log("API: No connected exchanges or invalid connections array, returning zero P&L")
-      return {
-        dailyPnL: 0,
-        dailyPnLPercentage: 0,
-        weeklyPnL: 0,
-        weeklyPnLPercentage: 0,
-        highestLeverage: 0,
-        dailyTrades: 0,
-      }
-    }
-
-    // Verificar se a primeira conexão é válida
-    const connection = connections[0]
-    if (!connection || typeof connection !== "object") {
-      console.log("API: First connection is invalid or undefined, returning zero P&L")
-      return {
-        dailyPnL: 0,
-        dailyPnLPercentage: 0,
-        weeklyPnLPercentage: 0,
-        highestLeverage: 0,
-        dailyTrades: 0,
-      }
-    }
-
-    try {
-      // Verificar se a conexão tem as propriedades necessárias
-      const exchange = connection.exchange?.toLowerCase() || ""
-      const apiKey = connection.apiKey || ""
-      const apiSecret = connection.apiSecret || ""
-      const accountType = connection.accountType || "futures"
-
-      // Verificar se temos as informações mínimas necessárias
-      if (!exchange || !apiKey || !apiSecret) {
-        console.log("API: Missing required connection properties (exchange, apiKey, or apiSecret), returning zero P&L")
-        return {
-          dailyPnL: 0,
-          dailyPnLPercentage: 0,
-          weeklyPnLPercentage: 0,
-          highestLeverage: 0,
-          dailyTrades: 0,
-        }
-      }
-
-      console.log(`API: Fetching P&L data from ${exchange} ${accountType} account`)
-
-      // Implementação específica para Binance
-      if (exchange === "binance") {
-        try {
-          const timestamp = Date.now()
-
-          // Calcular timestamps
-          const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
-          const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
-
-          // Endpoint para income (inclui PnL realizado)
-          const incomeEndpoint = "https://fapi.binance.com/fapi/v1/income"
-
-          // Buscar PnL diário (últimas 24h)
-          const dailyQueryString = addBinanceCommonParams(
-            `timestamp=${timestamp}&incomeType=REALIZED_PNL&startTime=${oneDayAgo}`,
-          )
-          const dailySignature = await createHmacSignature(dailyQueryString, apiSecret)
-          const dailyUrl = `${incomeEndpoint}?${dailyQueryString}&signature=${dailySignature}`
-
-          console.log(`API: Sending request for daily P&L: ${dailyUrl}`)
-
-          const dailyResponse = await rateLimitedRequest(dailyUrl, {
-            headers: { "X-MBX-APIKEY": apiKey },
-          })
-
-          // Buscar PnL semanal (últimos 7 dias)
-          const weeklyQueryString = addBinanceCommonParams(
-            `timestamp=${timestamp}&incomeType=REALIZED_PNL&startTime=${sevenDaysAgo}`,
-          )
-          const weeklySignature = await createHmacSignature(weeklyQueryString, apiSecret)
-          const weeklyUrl = `${incomeEndpoint}?${weeklyQueryString}&signature=${weeklySignature}`
-
-          console.log(`API: Sending request for weekly P&L: ${weeklyUrl}`)
-
-          const weeklyResponse = await rateLimitedRequest(weeklyUrl, {
-            headers: { "X-MBX-APIKEY": apiKey },
-          })
-
-          // Buscar histórico de trades para calcular alavancagem máxima e número de trades
-          const tradesEndpoint = "https://fapi.binance.com/fapi/v1/userTrades"
-          const tradesQueryString = addBinanceCommonParams(`timestamp=${timestamp}&limit=100&startTime=${oneDayAgo}`)
-          const tradesSignature = await createHmacSignature(tradesQueryString, apiSecret)
-          const tradesUrl = `${tradesEndpoint}?${tradesQueryString}&signature=${tradesSignature}`
-
-          console.log(`API: Sending request for trades history: ${tradesUrl}`)
-
-          const tradesResponse = await rateLimitedRequest(tradesUrl, {
-            headers: { "X-MBX-APIKEY": apiKey },
-          })
-
-          // Verificar se todas as requisições foram bem-sucedidas
-          let dailyData = []
-          let weeklyData = []
-          let tradesData = []
-
-          if (dailyResponse.ok) {
-            dailyData = await dailyResponse.json()
-            console.log("API: Received daily P&L data:", dailyData)
-          } else {
-            console.error(`API: Failed to fetch daily P&L data: ${dailyResponse.status}`)
-          }
-
-          if (weeklyResponse.ok) {
-            weeklyData = await weeklyResponse.json()
-            console.log("API: Received weekly P&L data:", weeklyData)
-          } else {
-            console.error(`API: Failed to fetch weekly P&L data: ${weeklyResponse.status}`)
-          }
-
-          if (tradesResponse.ok) {
-            tradesData = await tradesResponse.json()
-            console.log("API: Received trades data:", tradesData)
-          } else {
-            console.error(`API: Failed to fetch trades data: ${tradesResponse.status}`)
-          }
-
-          // Calcular P&L total
-          const dailyPnL = dailyData.reduce((sum: number, item: any) => sum + Number.parseFloat(item.income), 0)
-          const weeklyPnL = weeklyData.reduce((sum: number, item: any) => sum + Number.parseFloat(item.income), 0)
-
-          // Calcular alavancagem máxima e número de trades
-          let highestLeverage = 0
-          const uniqueOrderIds = new Set()
-
-          if (Array.isArray(tradesData)) {
-            tradesData.forEach((trade: any) => {
-              // Contar trades únicos (por orderId)
-              uniqueOrderIds.add(trade.orderId)
-
-              // Verificar alavancagem se disponível
-              if (trade.leverage) {
-                const leverage = Number.parseFloat(trade.leverage)
-                if (leverage > highestLeverage) {
-                  highestLeverage = leverage
-                }
-              }
-            })
-          }
-
-          const dailyTrades = uniqueOrderIds.size
-
-          // Obter saldo total para calcular percentuais
-          const balanceData = await api.getAccountBalance(connections, accountType)
-          const totalBalance = balanceData.total
-
-          // Calcular percentuais (em relação ao saldo atual)
-          // Usamos Math.max com um valor pequeno para evitar divisão por zero
-          const safeBalance = Math.max(totalBalance, 0.0001)
-          const dailyPnLPercentage = (dailyPnL / safeBalance) * 100
-          const weeklyPnLPercentage = (weeklyPnL / safeBalance) * 100
-
-          console.log("API: Calculated P&L metrics:", {
-            dailyPnL,
-            dailyPnLPercentage,
-            weeklyPnL,
-            highestLeverage,
-            dailyTrades,
-          })
-
-          return {
-            dailyPnL,
-            dailyPnLPercentage,
-            weeklyPnL,
-            weeklyPnLPercentage,
-            highestLeverage,
-            dailyTrades,
-          }
-        } catch (error) {
-          console.error("API: Error fetching P&L data from Binance:", error)
-          // Em caso de erro específico da Binance, retornar valores padrão
-          return {
-            dailyPnL: 0,
-            dailyPnLPercentage: 0,
-            weeklyPnLPercentage: 0,
-            highestLeverage: 0,
-            dailyTrades: 0,
-          }
-        }
-      } else {
-        // Para outras exchanges
-        console.log(`API: Exchange ${exchange} not supported for P&L data, returning defaults`)
-        return {
-          dailyPnL: 0,
-          dailyPnLPercentage: 0,
-          weeklyPnLPercentage: 0,
-          highestLeverage: 0,
-          dailyTrades: 0,
-        }
-      }
-    } catch (error) {
-      console.error("API: Error fetching P&L data:", error)
-      // Em caso de erro geral, retornar valores padrão
-      return {
-        dailyPnL: 0,
-        dailyPnLPercentage: 0,
-        weeklyPnLPercentage: 0,
-        highestLeverage: 0,
-        dailyTrades: 0,
-      }
-    }
-  },
-  // Adicionando uma nova função otimizada para análise de comportamentos
-  // Esta função é uma versão mais leve da getBehaviors que evita múltiplas chamadas de API
-
-  // Nova função otimizada para análise de comportamentos
-  getLightBehaviors: async (connections: any[]) => {
-    console.log("API: Getting light behaviors analysis")
-    console.log("API: Connections received:", connections)
-
-    if (!connections || connections.length === 0) {
-      console.log("API: No connected exchanges, returning empty behaviors")
-      return []
-    }
-
-    try {
-      // Importar as funções de análise de comportamento
-      const {
-        detectExcessiveLeverage,
-        detectEmotionalTrading,
-        detectRiskLimitViolation,
-        detectMultipleHighLeveragePositions,
-      } = await import("../services/behaviorAnalysis")
-
-      // Usar dados em cache ou pré-calculados quando possível
-      // Em vez de fazer múltiplas chamadas de API, fazemos apenas uma chamada
-      // para buscar todos os dados necessários de uma vez
-      const cachedData = await api.getCombinedTradingData(connections)
-
-      console.log("API: Using combined data for behavior analysis:", {
-        positionsCount: cachedData.positions.length,
-        tradesCount: cachedData.trades.length,
-        pnlData: cachedData.pnlData,
-      })
-
-      // Obter os limites de risco do store global
-      // Isso garante que usamos os mesmos limites definidos no gerenciamento de risco
-      let riskLimits
-      let selectedRiskLevel
-
-      try {
-        // Importar o store de forma segura
-        const { useStore } = await import("../store")
-        const storeState = useStore.getState()
-
-        // Verificar se conseguimos obter os limites de risco do store
-        if (storeState && storeState.riskLimits && storeState.selectedRiskLevel) {
-          riskLimits = storeState.riskLimits
-          selectedRiskLevel = storeState.selectedRiskLevel
-          console.log(`API: Using risk limits for ${selectedRiskLevel} level:`, riskLimits)
-        } else {
-          // Fallback para valores padrão se não conseguirmos obter do store
-          console.log("API: Could not get risk limits from store, using default values")
-          riskLimits = {
-            dailyLossLimit: 5.0, // Valor moderado como padrão
-            weeklyLossLimit: 15.0, // Valor moderado como padrão
-            maxLeverage: 10,
-            maxDailyTrades: 20,
-            recoveryTime: 12,
-          }
-          selectedRiskLevel = "Moderate"
-        }
-      } catch (storeError) {
-        console.error("API: Error accessing store, using default risk limits:", storeError)
-        // Fallback para valores padrão em caso de erro
-        riskLimits = {
-          dailyLossLimit: 5.0,
-          weeklyLossLimit: 15.0,
-          maxLeverage: 10,
-          maxDailyTrades: 20,
-          recoveryTime: 12,
-        }
-        selectedRiskLevel = "Moderate"
-      }
-
-      // Executar as análises de comportamento
-      const behaviors = []
-
-      // 1. Detectar uso excessivo de alavancagem
-      const excessiveLeverageBehavior = detectExcessiveLeverage(cachedData.trades, cachedData.positions, riskLimits)
-      if (excessiveLeverageBehavior) {
-        behaviors.push(excessiveLeverageBehavior)
-      }
-
-      // 2. Detectar trading emocional
-      const emotionalTradingBehavior = detectEmotionalTrading(cachedData.trades)
-      if (emotionalTradingBehavior) {
-        behaviors.push(emotionalTradingBehavior)
-      }
-
-      // 3. Detectar violação de limites de risco
-      const riskLimitViolationBehavior = detectRiskLimitViolation(
-        cachedData.pnlData.dailyPnLPercentage,
-        cachedData.pnlData.weeklyPnLPercentage,
-        riskLimits,
-      )
-      if (riskLimitViolationBehavior) {
-        behaviors.push(riskLimitViolationBehavior)
-      }
-
-      // 4. Detectar múltiplas operações com alta alavancagem
-      const multipleHighLeverageBehavior = detectMultipleHighLeveragePositions(cachedData.positions, riskLimits)
-      if (multipleHighLeverageBehavior) {
-        behaviors.push(multipleHighLeverageBehavior)
-      }
-
-      // Adicionar comportamentos simulados para garantir que sempre temos algo para mostrar
-      // durante o desenvolvimento e testes
-      if (behaviors.length === 0 && process.env.NODE_ENV !== "production") {
-        console.log("API: No behaviors detected, adding sample behaviors for development")
-        behaviors.push({
-          id: `sample-behavior-${Date.now()}`,
-          type: "Uso Excessivo de Alavancagem",
-          description:
-            "Você está utilizando alavancagem acima do recomendado para seu perfil de risco. Limite: 10x, Utilizado: 15.5x.",
-          severity: "medium",
-          recommendation: "Considere reduzir sua alavancagem para no máximo 10x para seu nível de risco atual.",
-          timestamp: Date.now(),
-        })
-      }
-
-      console.log(`API: Light behavior analysis complete. Found ${behaviors.length} behaviors.`)
-      return behaviors
-    } catch (error) {
-      console.error("API: Error analyzing behaviors:", error)
-      return []
-    }
-  },
-
-  // Nova função para buscar todos os dados de uma vez
-  getCombinedTradingData: async (connections: any[]) => {
-    console.log("API: Getting combined trading data")
-
-    // Verificar se temos dados em cache
-    if (api._cachedTradingData && Date.now() - api._cachedTradingData.timestamp < 15 * 60 * 1000) {
-      console.log("API: Using cached trading data")
-      return api._cachedTradingData.data
-    }
-
-    // Buscar apenas os dados essenciais
-    // Limitar a quantidade de trades para melhorar performance
-    const positions = await api.getPositions(connections)
-
-    // Buscar trades dos últimos 7 dias
-    const recentTime = Date.now() - 7 * 24 * 60 * 60 * 1000
-    const trades = await api.getTrades(connections, 50, recentTime) // Aumentado para 50 trades
-
-    const pnlData = await api.getPnLData(connections)
-
-    // Armazenar em cache
-    api._cachedTradingData = {
-      timestamp: Date.now(),
-      data: { positions, trades, pnlData },
-    }
-
-    return { positions, trades, pnlData }
-  },
-
-  // Variável para armazenar cache
-  _cachedTradingData: null,
-  // Adicionar uma nova função para verificar uma posição específica contra os limites de risco
-  // Esta função deve ser adicionada ao objeto api, após a função getLightBehaviors
-
-  // Nova função para verificar uma posição específica contra os limites de risco
-  checkPositionRiskLimits: async (position: Position, riskLimits: RiskLimits) => {
-    console.log("API: Checking position against risk limits:", position)
-
-    const violations = []
-
-    // Verificar alavancagem
-    if (position.leverage > riskLimits.maxLeverage) {
-      violations.push({
-        type: "leverage",
-        actual: position.leverage,
-        limit: riskLimits.maxLeverage,
-        message: `Alavancagem de ${position.leverage}x excede o limite de ${riskLimits.maxLeverage}x para seu perfil de risco.`,
-      })
-    }
-
-    // Verificar tamanho da posição (como % do capital)
-    // Primeiro precisamos obter o saldo total
-    const lastBalance = api.getLastProcessedBalance()
-    if (lastBalance && lastBalance.total > 0) {
-      const positionValue = position.size * position.entryPrice
-      const positionSizePercent = (positionValue / lastBalance.total) * 100
-
-      // Definir um limite de tamanho baseado no nível de risco
-      // Conservador: 20%, Moderado: 40%, Agressivo: 60%
-      let sizeLimit = 40 // Valor padrão moderado
-      if (riskLimits.maxLeverage <= 5) sizeLimit = 20 // Conservador
-      if (riskLimits.maxLeverage >= 15) sizeLimit = 60 // Agressivo
-
-      if (positionSizePercent > sizeLimit) {
-        violations.push({
-          type: "size",
-          actual: positionSizePercent.toFixed(2),
-          limit: sizeLimit,
-          message: `Tamanho da posição (${positionSizePercent.toFixed(2)}% do capital) excede o limite recomendado de ${sizeLimit}%.`,
-        })
-      }
-    }
-
-    return violations
-  },
-
-  // Nova função para monitorar posições em tempo real
-  monitorPositionsRealTime: async (connections: any[], callback: Function) => {
-    console.log("API: Starting real-time position monitoring")
-
-    if (!connections || connections.length === 0) {
-      console.log("API: No connections available for monitoring")
-      return false
-    }
-
-    try {
-      // Importar o store para obter os limites de risco atuais
-      const { useStore } = await import("../store")
-      const { riskLimits } = useStore.getState()
-
-      // Armazenar IDs de posições já processadas para evitar notificações duplicadas
-      const processedPositionIds = new Set()
-
-      // Função para verificar novas posições
-      const checkNewPositions = async () => {
-        try {
-          // Obter posições atuais
-          const currentPositions = await api.getPositions(connections)
-
-          // Verificar cada posição
-          for (const position of currentPositions) {
-            // Verificar se já processamos esta posição
-            if (!processedPositionIds.has(position.id)) {
-              console.log("API: New position detected:", position)
-
-              // Verificar limites de risco
-              const violations = await api.checkPositionRiskLimits(position, riskLimits)
-
-              // Se houver violações, notificar via callback
-              if (violations.length > 0) {
-                callback({
-                  position,
-                  violations,
-                  timestamp: Date.now(),
-                })
-              }
-
-              // Marcar como processada
-              processedPositionIds.add(position.id)
-            }
-          }
-        } catch (error) {
-          console.error("API: Error checking new positions:", error)
-        }
-      }
-
-      // Verificar imediatamente
-      await checkNewPositions()
-
-      // Configurar intervalo para verificação periódica (a cada 30 segundos)
-      const intervalId = setInterval(checkNewPositions, 30000)
-
-      // Retornar função para parar o monitoramento
-      return () => {
-        console.log("API: Stopping real-time position monitoring")
-        clearInterval(intervalId)
-      }
-    } catch (error) {
-      console.error("API: Error setting up position monitoring:", error)
-      return false
-    }
-  },
-  connectExchange: async () => {
-    console.log("API: connectExchange function called")
-    return true
-  },
-  _cachedTradingData: null,
-  _cacheTimestamps,
-  _activeWebSockets,
-  // Corrigir a função connectExchange para retornar um resultado válido
-}
-
-api.connectExchange = async (exchange: string, apiKey: string, apiSecret: string, accountType: string) => {
-  console.log(`API: Connecting to ${exchange} ${accountType} with API key: ${apiKey.substring(0, 4)}...`)
-
-  try {
-    // Validar os parâmetros
-    if (!exchange || !apiKey || !apiSecret || !accountType) {
-      return { success: false, message: "Parâmetros de conexão inválidos" }
-    }
-
-    // Implementação específica para Binance
-    if (exchange.toLowerCase() === "binance") {
-      try {
-        // Testar a conexão fazendo uma chamada simples à API
-        const timestamp = Date.now()
-        let endpoint = ""
-
-        if (accountType === "futures") {
-          endpoint = "https://fapi.binance.com/fapi/v1/time"
-        } else {
-          endpoint = "https://api.binance.com/api/v3/time"
-        }
-
-        // Criar a string para assinatura
-        const queryString = `timestamp=${timestamp}`
-        const signature = await createHmacSignature(queryString, apiSecret)
-
-        // URL completa
-        const url = `${endpoint}?${queryString}&signature=${signature}`
-
-        // Fazer a requisição
-        const response = await fetch(url, {
-          method: "GET",
-          headers: {
-            "X-MBX-APIKEY": apiKey,
-          },
-        })
-
-        if (!response.ok) {
-          const errorText = await response.text()
-          console.error(`API: Binance connection test failed: ${response.status}`, errorText)
-          return { success: false, message: `Falha na conexão: ${response.status} - ${errorText}` }
-        }
-
-        // Se chegou aqui, a conexão foi bem-sucedida
-        console.log("API: Binance connection test successful")
-        return { success: true, message: "Conexão estabelecida com sucesso" }
-      } catch (error) {
-        console.error("API: Error testing Binance connection:", error)
-        return {
-          success: false,
-          message: `Erro ao testar conexão: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
-        }
-      }
-    } else {
-      // Outras corretoras
-      console.log(`API: Exchange ${exchange} not fully supported, using mock connection`)
-      return { success: true, message: "Conexão simulada estabelecida com sucesso" }
-    }
-  } catch (error) {
-    console.error("API: Error in connectExchange:", error)
-    return {
-      success: false,
-      message: `Erro interno: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
-    }
-  }
-}
-
-// Modificar a função getPnLData para considerar movimentações de capital
-const getPnLData = async (connections: any[]): Promise<any> => {
-  console.log("API: Getting P&L data with capital movement adjustments")
-
-  // Código existente para obter dados brutos de PnL...
-
-  try {
-    // Obter dados de PnL da API da corretora...
-
-    // Calcular timestamps
-    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
-
-    // Obter movimentações de capital nos períodos relevantes
-    const { getCapitalMovementTotals } = await import("../services/capitalMovementService")
-
-    const dailyMovements = await getCapitalMovementTotals(new Date(oneDayAgo))
-    const weeklyMovements = await getCapitalMovementTotals(new Date(sevenDaysAgo))
-
-    // Obter saldo total para calcular percentuais
-    const balanceData = await api.getAccountBalance(connections, accountType)
-    const totalBalance = balanceData.total
-
-    // Endpoint para income (inclui PnL realizado)
-    const incomeEndpoint = "https://fapi.binance.com/fapi/v1/income"
-
-    // Buscar PnL diário (últimas 24h)
-    const timestamp = Date.now()
-    const dailyQueryString = addBinanceCommonParams(
-      `timestamp=${timestamp}&incomeType=REALIZED_PNL&startTime=${oneDayAgo}`,
-    )
-    const dailySignature = await createHmacSignature(dailyQueryString, apiSecret)
-    const dailyUrl = `${incomeEndpoint}?${dailyQueryString}&signature=${dailySignature}`
-
-    console.log(`API: Sending request for daily P&L: ${dailyUrl}`)
-
-    const dailyResponse = await rateLimitedRequest(dailyUrl, {
-      headers: { "X-MBX-APIKEY": apiKey },
-    })
-
-    // Buscar PnL semanal (últimos 7 dias)
-    const weeklyQueryString = addBinanceCommonParams(
-      `timestamp=${timestamp}&incomeType=REALIZED_PNL&startTime=${sevenDaysAgo}`,
-    )
-    const weeklySignature = await createHmacSignature(weeklyQueryString, apiSecret)
-    const weeklyUrl = `${incomeEndpoint}?${weeklyQueryString}&signature=${weeklySignature}`
-
-    console.log(`API: Sending request for weekly P&L: ${weeklyUrl}`)
-
-    const weeklyResponse = await rateLimitedRequest(weeklyUrl, {
-      headers: { "X-MBX-APIKEY": apiKey },
-    })
-
-    // Buscar histórico de trades para calcular alavancagem máxima e número de trades
-    const tradesEndpoint = "https://fapi.binance.com/fapi/v1/userTrades"
-    const tradesQueryString = addBinanceCommonParams(`timestamp=${timestamp}&limit=100&startTime=${oneDayAgo}`)
-    const tradesSignature = await createHmacSignature(tradesQueryString, apiSecret)
-    const tradesUrl = `${tradesEndpoint}?${tradesQueryString}&signature=${tradesSignature}`
-
-    console.log(`API: Sending request for trades history: ${tradesUrl}`)
-
-    const tradesResponse = await rateLimitedRequest(tradesUrl, {
-      headers: { "X-MBX-APIKEY": apiKey },
-    })
-
-    // Verificar se todas as requisições foram bem-sucedidas
-    let dailyData = []
-    let weeklyData = []
-    let tradesData = []
-
-    if (dailyResponse.ok) {
-      dailyData = await dailyResponse.json()
-      console.log("API: Received daily P&L data:", dailyData)
-    } else {
-      console.error(`API: Failed to fetch daily P&L data: ${dailyResponse.status}`)
-    }
-
-    if (weeklyResponse.ok) {
-      weeklyData = await weeklyResponse.json()
-      console.log("API: Received weekly P&L data:", weeklyData)
-    } else {
-      console.error(`API: Failed to fetch weekly P&L data: ${weeklyResponse.status}`)
-    }
-
-    if (tradesResponse.ok) {
-      tradesData = await tradesResponse.json()
-      console.log("API: Received trades data:", tradesData)
-    } else {
-      console.error(`API: Failed to fetch trades data: ${tradesResponse.status}`)
-    }
-
-    // Calcular P&L total
-    const dailyPnL = dailyData.reduce((sum: number, item: any) => sum + Number.parseFloat(item.income), 0)
-    const weeklyPnL = weeklyData.reduce((sum: number, item: any) => sum + Number.parseFloat(item.income), 0)
-
-    // Ajustar o saldo base considerando as movimentações de capital
-    const adjustedDailyBalance = totalBalance + dailyMovements.withdrawals - dailyMovements.deposits
-    const adjustedWeeklyBalance = totalBalance + weeklyMovements.withdrawals - weeklyMovements.deposits
-
-    // Usar Math.max com um valor pequeno para evitar divisão por zero
-    const safeDailyBalance = Math.max(adjustedDailyBalance, 0.0001)
-    const safeWeeklyBalance = Math.max(adjustedWeeklyBalance, 0.0001)
-
-    // Calcular percentuais ajustados
-    const dailyPnLPercentage = (dailyPnL / safeDailyBalance) * 100
-    const weeklyPnLPercentage = (weeklyPnL / safeWeeklyBalance) * 100
-
-    // Calcular alavancagem máxima e número de trades
-    let highestLeverage = 0
-    const uniqueOrderIds = new Set()
-
-    if (Array.isArray(tradesData)) {
-      tradesData.forEach((trade: any) => {
-        // Contar trades únicos (por orderId)
-        uniqueOrderIds.add(trade.orderId)
-
-        // Verificar alavancagem se disponível
-        if (trade.leverage) {
-          const leverage = Number.parseFloat(trade.leverage)
-          if (leverage > highestLeverage) {
-            highestLeverage = leverage
-          }
-        }
-      })
-    }
-
-    const dailyTrades = uniqueOrderIds.size
-
-    console.log("API: Calculated adjusted P&L metrics:", {
-      dailyPnL,
-      dailyPnLPercentage,
-      adjustedDailyBalance,
-      weeklyPnL,
-      weeklyPnLPercentage,
-      adjustedWeeklyBalance,
-      dailyMovements,
-      weeklyMovements,
-      highestLeverage,
-      dailyTrades,
-    })
-
-    return {
-      dailyPnL,
-      dailyPnLPercentage,
-      weeklyPnL,
-      weeklyPnLPercentage,
-      highestLeverage,
-      dailyTrades,
-      // Adicionar informações sobre os ajustes
-      capitalMovements: {
-        daily: dailyMovements,
-        weekly: weeklyMovements,
-      },
-    }
-  } catch (error) {
-    console.error("API: Error calculating adjusted P&L:", error)
-    // Retornar valores padrão em caso de erro
-    return {
-      dailyPnL: 0,
-      dailyPnLPercentage: 0,
-      weeklyPnL: 0,
-      weeklyPnLPercentage: 0,
-      highestLeverage: 0,
-      dailyTrades: 0,
-      capitalMovements: {
-        daily: { deposits: 0, withdrawals: 0 },
-        weekly: { deposits: 0, withdrawals: 0 },
-      },
-    }
-  }
-}
+                const incomeUrl = `${
