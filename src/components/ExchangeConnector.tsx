@@ -31,97 +31,189 @@ const ExchangeConnector: React.FC = () => {
 
   const exchanges: Exchange[] = ["Binance"]
 
-  // Modificar o useEffect para carregar apenas dados essenciais inicialmente
+  // Modificar o useEffect para melhorar o carregamento de dados
   useEffect(() => {
     const loadConnections = async () => {
       try {
         setIsLoading(true)
         const connections = await getExchangeConnections()
-        connections.forEach((connection) => {
-          addConnection(connection)
-        })
 
-        if (connections.length > 0) {
-          // Carregar apenas dados essenciais inicialmente
-          await loadEssentialData(connections)
+        // Verificar se temos conexões válidas
+        if (connections && Array.isArray(connections) && connections.length > 0) {
+          console.log("ExchangeConnector: Found existing connections:", connections.length)
 
-          // Carregar dados detalhados após um pequeno delay
-          setTimeout(() => loadDetailedData(connections), 1000)
+          // Adicionar conexões ao estado local
+          connections.forEach((connection) => {
+            addConnection(connection)
+          })
+
+          // Mostrar indicador de carregamento
+          setIsLoading(true)
+
+          try {
+            // Carregar dados essenciais primeiro (com timeout para garantir que a UI seja atualizada)
+            setTimeout(async () => {
+              try {
+                await loadEssentialData(connections)
+
+                // Carregar dados detalhados após os dados essenciais
+                setTimeout(() => loadDetailedData(connections), 1500)
+              } catch (innerError) {
+                console.error("ExchangeConnector: Error in delayed loading:", innerError)
+              }
+            }, 100)
+          } catch (loadError) {
+            console.error("ExchangeConnector: Error in initial data loading:", loadError)
+          }
+        } else {
+          console.log("ExchangeConnector: No existing connections found")
         }
       } catch (error) {
-        console.error("Error loading exchange connections:", error)
+        console.error("ExchangeConnector: Error loading exchange connections:", error)
         toast.error("Falha ao carregar conexões de corretoras")
       } finally {
-        setIsLoading(false)
+        // Finalizar o carregamento após um pequeno delay para garantir que a UI seja atualizada
+        setTimeout(() => {
+          setIsLoading(false)
+        }, 500)
       }
     }
 
     loadConnections()
   }, [addConnection])
 
-  // Adicionar estas novas funções após o useEffect
-  // Função para carregar apenas dados essenciais
+  // Melhorar a função loadEssentialData para ser mais robusta
   const loadEssentialData = async (connections) => {
     try {
       console.log("ExchangeConnector: Loading essential data...")
-      // Carregar apenas saldo disponível e risco diário
-      const balanceData = await api.getAccountBalance(connections, "futures", true) // true = apenas dados essenciais
-      setBalance(balanceData)
 
-      // Carregar posições abertas sem detalhes completos
-      const positions = await api.getPositions(connections, true) // true = apenas dados essenciais
-      // Atualizar o estado global com as posições
-      if (updatePositions) {
-        updatePositions(positions)
+      // Verificar se as conexões são válidas
+      if (!connections || !Array.isArray(connections) || connections.length === 0) {
+        console.error("ExchangeConnector: No valid connections for essential data")
+        return
       }
+
+      // Carregar saldo com tratamento de erro
+      try {
+        const balanceData = await api.getAccountBalance(connections, "futures", true)
+        if (balanceData) {
+          console.log("ExchangeConnector: Essential balance data loaded:", balanceData)
+          setBalance(balanceData)
+        }
+      } catch (balanceError) {
+        console.error("ExchangeConnector: Error loading essential balance data:", balanceError)
+      }
+
+      // Carregar posições com tratamento de erro
+      try {
+        const positions = await api.getPositions(connections, true)
+        if (positions && Array.isArray(positions)) {
+          console.log("ExchangeConnector: Essential positions data loaded:", positions.length)
+          if (updatePositions) {
+            updatePositions(positions)
+          }
+        }
+      } catch (positionsError) {
+        console.error("ExchangeConnector: Error loading essential positions data:", positionsError)
+      }
+
+      // Atualizar status de carregamento
+      toast.info("Dados básicos carregados. Carregando detalhes...", { autoClose: 2000 })
     } catch (error) {
-      console.error("ExchangeConnector: Error loading essential data:", error)
+      console.error("ExchangeConnector: Error in loadEssentialData:", error)
     }
   }
 
-  // Função para carregar dados detalhados em segundo plano
+  // Melhorar a função loadDetailedData para ser mais robusta
   const loadDetailedData = async (connections) => {
     try {
       console.log("ExchangeConnector: Loading detailed data...")
-      // Carregar dados completos de saldo
-      const detailedBalance = await api.getAccountBalance(connections, accountType)
-      setBalance(detailedBalance)
+
+      // Verificar se as conexões são válidas
+      if (!connections || !Array.isArray(connections) || connections.length === 0) {
+        console.error("ExchangeConnector: No valid connections for detailed data")
+        return
+      }
+
+      // Carregar dados completos de saldo com tratamento de erro
+      try {
+        const detailedBalance = await api.getAccountBalance(connections, accountType)
+        if (detailedBalance) {
+          console.log("ExchangeConnector: Detailed balance data loaded:", detailedBalance)
+          setBalance(detailedBalance)
+        }
+      } catch (balanceError) {
+        console.error("ExchangeConnector: Error loading detailed balance data:", balanceError)
+      }
 
       // Carregar posições com todos os detalhes
-      const detailedPositions = await api.getPositions(connections)
-      if (updatePositions) {
-        updatePositions(detailedPositions)
+      try {
+        const detailedPositions = await api.getPositions(connections)
+        if (detailedPositions && Array.isArray(detailedPositions)) {
+          console.log("ExchangeConnector: Detailed positions data loaded:", detailedPositions.length)
+          if (updatePositions) {
+            updatePositions(detailedPositions)
+          }
+        }
+      } catch (positionsError) {
+        console.error("ExchangeConnector: Error loading detailed positions data:", positionsError)
       }
 
       // Iniciar WebSocket para atualizações em tempo real se disponível
-      api.startWebSocketUpdates(connections, (data) => {
-        if (data.type === "balance") {
-          setBalance(data.balance)
-        } else if (data.type === "positions") {
-          if (updatePositions) {
-            updatePositions(data.positions)
+      try {
+        api.startWebSocketUpdates(connections, (data) => {
+          if (data.type === "balance" && data.balance) {
+            setBalance(data.balance)
+          } else if (data.type === "positions" && data.positions) {
+            if (updatePositions) {
+              updatePositions(data.positions)
+            }
           }
-        }
-      })
+        })
+      } catch (wsError) {
+        console.error("ExchangeConnector: Error starting WebSocket updates:", wsError)
+      }
 
       // Carregar dados de risco e comportamentos em segundo plano
-      api.getRiskStatus(connections).then((riskStatus) => {
-        if (updateRiskStatus) {
-          updateRiskStatus(riskStatus)
-        }
-      })
+      try {
+        api
+          .getRiskStatus(connections)
+          .then((riskStatus) => {
+            if (riskStatus && updateRiskStatus) {
+              updateRiskStatus(riskStatus)
+            }
+          })
+          .catch((error) => {
+            console.error("ExchangeConnector: Error loading risk status:", error)
+          })
+      } catch (riskError) {
+        console.error("ExchangeConnector: Error setting up risk status loading:", riskError)
+      }
 
-      api.getLightBehaviors(connections).then((behaviors) => {
-        if (updateBehaviors) {
-          updateBehaviors(behaviors)
-        }
-      })
+      try {
+        api
+          .getLightBehaviors(connections)
+          .then((behaviors) => {
+            if (behaviors && updateBehaviors) {
+              updateBehaviors(behaviors)
+            }
+          })
+          .catch((error) => {
+            console.error("ExchangeConnector: Error loading behaviors:", error)
+          })
+      } catch (behaviorError) {
+        console.error("ExchangeConnector: Error setting up behaviors loading:", behaviorError)
+      }
+
+      // Notificar que o carregamento completo foi concluído
+      toast.success("Dados carregados com sucesso!", { autoClose: 3000 })
     } catch (error) {
-      console.error("ExchangeConnector: Error loading detailed data:", error)
+      console.error("ExchangeConnector: Error in loadDetailedData:", error)
+      toast.error("Alguns dados detalhados não puderam ser carregados")
     }
   }
 
-  // Modificar a função handleConnect para usar a nova abordagem
+  // Melhorar a função handleConnect para ser mais robusta
   const handleConnect = async () => {
     if (!apiKey || !apiSecret) {
       setError("API Key e Secret são obrigatórios")
@@ -144,7 +236,7 @@ const ExchangeConnector: React.FC = () => {
       // First validate with exchange API
       const result = await api.connectExchange(selectedExchange, apiKey, apiSecret, accountType)
 
-      if (result.success) {
+      if (result && result.success) {
         console.log("ExchangeConnector: Connection successful, saving to Supabase")
 
         // Then save to Supabase
@@ -170,31 +262,32 @@ const ExchangeConnector: React.FC = () => {
         addConnection(newConnection)
 
         // Update the hasConnectedExchanges flag in the API
-        const updatedConnections = [...connections, newConnection]
+        const updatedConnections = [...(connections || []), newConnection]
         console.log("ExchangeConnector: Updating hasConnectedExchanges flag")
         await api.checkRealConnections(updatedConnections)
 
-        // Fetch essential data immediately
+        // Mostrar toast de sucesso
+        toast.success(`Conectado à ${selectedExchange} ${accountType === "futures" ? "Futuros" : "Spot"} com sucesso!`)
+
+        // Fetch essential data immediately with error handling
         console.log("ExchangeConnector: Fetching initial essential data")
         try {
           await loadEssentialData([newConnection])
 
           // Carregar dados detalhados após um pequeno delay
-          setTimeout(() => loadDetailedData([newConnection]), 1000)
+          setTimeout(() => loadDetailedData([newConnection]), 1500)
         } catch (balanceError) {
           console.error("ExchangeConnector: Error fetching initial data:", balanceError)
           toast.warning("Conexão estabelecida, mas houve um erro ao buscar os dados iniciais")
         }
 
-        toast.success(`Conectado à ${selectedExchange} ${accountType === "futures" ? "Futuros" : "Spot"} com sucesso!`)
-
         // Reset form
         setApiKey("")
         setApiSecret("")
       } else {
-        console.error("ExchangeConnector: Connection failed:", result.message)
-        setError(result.message || "Falha ao conectar à corretora")
-        toast.error(result.message || "Falha ao conectar à corretora")
+        console.error("ExchangeConnector: Connection failed:", result ? result.message : "Unknown error")
+        setError(result && result.message ? result.message : "Falha ao conectar à corretora")
+        toast.error(result && result.message ? result.message : "Falha ao conectar à corretora")
       }
     } catch (err: any) {
       console.error("ExchangeConnector: Error connecting to exchange:", err)
